@@ -1,0 +1,18 @@
+[Unit]
+Description=IPDR Traffic Detail Record API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ipdr
+Group=ipdr
+WorkingDirectory=/opt/ipdr
+EnvironmentFile=/opt/ipdr/.env
+ExecStart=/opt/ipdr/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
