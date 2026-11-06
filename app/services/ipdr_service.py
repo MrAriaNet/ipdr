@@ -7,10 +7,14 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 import json
 
+from sqlalchemy import or_
+
 from app.models import IPDRRecord, TrafficSummary, SecurityEvent
 from app.schemas import IPDRRecordCreate, TrafficQuery, TrafficStatistics
 from app.dpi.packet_analyzer import PacketAnalyzer
+from app.utils.hashutil import sha256_hex
 from app.utils.logger import logger
+from app.utils.timeutil import ensure_utc
 
 
 class IPDRService:
@@ -48,6 +52,20 @@ class IPDRService:
         
         # Create record
         logger.debug(f"Creating IPDR record: {record.source_ip}:{record.source_port} -> {record.destination_ip}:{record.destination_port}")
+        start_t = ensure_utc(record.session_start_time)
+        end_t = ensure_utc(record.session_end_time)
+        content_hash = sha256_hex(
+            {
+                "source_ip": record.source_ip,
+                "source_port": record.source_port,
+                "destination_ip": record.destination_ip,
+                "destination_port": record.destination_port,
+                "protocol": record.protocol,
+                "session_start_time": start_t.isoformat() if start_t else None,
+                "total_bytes": record.total_bytes,
+                "total_packets": record.total_packets,
+            }
+        )
         db_record = IPDRRecord(
             source_ip=record.source_ip,
             source_port=record.source_port,
@@ -55,8 +73,8 @@ class IPDRService:
             destination_port=record.destination_port,
             ip_version=record.ip_version or 4,
             protocol_number=record.protocol_number,
-            session_start_time=record.session_start_time,
-            session_end_time=record.session_end_time,
+            session_start_time=start_t,
+            session_end_time=end_t,
             duration_seconds=record.duration_seconds,
             bytes_uploaded=record.bytes_uploaded,
             bytes_downloaded=record.bytes_downloaded,
@@ -64,6 +82,11 @@ class IPDRService:
             packets_uploaded=record.packets_uploaded,
             packets_downloaded=record.packets_downloaded,
             total_packets=record.total_packets,
+            is_sampled=bool(record.is_sampled),
+            sampling_rate=int(record.sampling_rate or 1),
+            sampled_bytes=int(record.sampled_bytes or 0),
+            sampled_packets=int(record.sampled_packets or 0),
+            sample_pool=record.sample_pool,
             protocol=record.protocol,
             service_type=record.service_type,
             application_name=record.application_name,
@@ -76,6 +99,7 @@ class IPDRService:
             threat_type=record.threat_type,
             security_flags=json.dumps(record.security_flags) if record.security_flags else None,
             additional_info=json.dumps(record.additional_info) if record.additional_info else None,
+            content_hash=content_hash,
         )
         
         db.add(db_record)
@@ -136,14 +160,32 @@ class IPDRService:
     def _apply_query_filters(query_obj, query: TrafficQuery):
         """Apply TrafficQuery filters to an IPDRRecord query"""
         filters = []
-        if query.start_time:
-            filters.append(IPDRRecord.session_start_time >= query.start_time)
-        if query.end_time:
-            filters.append(IPDRRecord.session_start_time <= query.end_time)
+        start = ensure_utc(query.start_time)
+        end = ensure_utc(query.end_time)
+        if getattr(query, "session_overlap", False) and (start or end):
+            # Session overlaps window: started before window end AND (no end OR ended after window start)
+            if end is not None:
+                filters.append(IPDRRecord.session_start_time <= end)
+            if start is not None:
+                filters.append(
+                    or_(
+                        IPDRRecord.session_end_time.is_(None),
+                        IPDRRecord.session_end_time >= start,
+                    )
+                )
+        else:
+            if start:
+                filters.append(IPDRRecord.session_start_time >= start)
+            if end:
+                filters.append(IPDRRecord.session_start_time <= end)
         if query.source_ip:
             filters.append(IPDRRecord.source_ip == query.source_ip)
         if query.destination_ip:
             filters.append(IPDRRecord.destination_ip == query.destination_ip)
+        if getattr(query, "source_port", None) is not None:
+            filters.append(IPDRRecord.source_port == query.source_port)
+        if getattr(query, "destination_port", None) is not None:
+            filters.append(IPDRRecord.destination_port == query.destination_port)
         if query.protocol:
             filters.append(IPDRRecord.protocol == query.protocol)
         if query.protocol_number is not None:

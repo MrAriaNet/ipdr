@@ -3,14 +3,14 @@
 جمع‌آوری، ذخیره، جستجو و تحلیل نشست‌های ترافیک شبکه. مناسب سرورهای لینوکس (Ubuntu، Debian، AlmaLinux) با ورودی **NetFlow / IPFIX / sFlow** از **Cisco**، **MikroTik** و سایر exporterها — پشتیبانی **IPv4 و IPv6**.
 
 > **English:** [README.md](README.md)  
-> **نصب و استفادهٔ کامل فارسی:** [INSTALL-FA.md](INSTALL-FA.md)
+> **نصب و استفادهٔ کامل:** [INSTALL-FA.md](INSTALL-FA.md) · انگلیسی: [INSTALL.md](INSTALL.md)
 
 ## قابلیت‌ها
 
 - رکوردهای IPDR: مبدأ/مقصد (**IPv4 و IPv6**)، پورت، زمان، حجم، پروتکل، سرویس، شناسه کاربر
 - نگاشت کامل پروتکل‌های IANA (`GET /api/ipdr/protocols`) — TCP، UDP، ICMPv6، GRE، ESP، SCTP و …
 - کالکتور NetFlow **v1 / v5 / v7 / v8 / v9** و **IPFIX** (UDP 2055، dual-stack)
-- کالکتور **sFlow v2 / v4 / v5** (UDP 6343، dual-stack)
+- کالکتور **sFlow v2 / v4 / v5** (UDP 6343) با **تخمین حجم بر اساس sample rate** (≈۱۰۰٪ ترافیک؛ [SFLOW-FA.md](SFLOW-FA.md))
 - کالکتور JSON آزمایشی (UDP 9999)
 - کمک‌های DPI (Scapy) برای تشخیص سرویس / تهدید
 - آمار، خلاصه ترافیک و جستجوی پیشرفته
@@ -18,7 +18,8 @@
 - لاگ فایل با چرخش در `logs/`
 - مدل‌های صورتحساب: prepaid، postpaid، hybrid
 - داشبورد HTML و مستندات OpenAPI (`/docs`)
-- **CGNAT Port Block Allocation (PBA)** برای Cisco ASR (مثل 1001-X): ذخیره allocate/deallocate و جستجوی `public_ip:port` ← IP مشترک برای امنیت شبکه
+- **CGNAT Port Block Allocation (PBA)** برای Cisco ASR (مثل 1001-X): ذخیره allocate/deallocate و جستجوی `public_ip:port` ← IP مشترک (بدون جدول کانکشن/XLATE)
+- **گردش کار نهاد / امنیت**: AAA، investigate، export با هش، audit پرس‌وجو، legal hold، retention — [LEA-FA.md](LEA-FA.md)
 
 ## پیش‌نیازها
 
@@ -96,9 +97,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - `POST /api/cgnat/blocks`
 - `POST /api/cgnat/blocks/bulk`
 - `GET /api/cgnat/blocks`
-- `GET /api/cgnat/lookup?public_ip=&public_port=&at=`
+- `GET /api/cgnat/lookup?public_ip=&public_port=&at=` — نگاشت امنیتی PBA (بدون جدول کانکشن/XLATE؛ چندنتیجه/مبهم)
+- `GET /api/cgnat/lookup/by-subscriber?inside_ip=&at=` — معکوس: مشترک ← بلوک‌های پورت عمومی
+- `POST /api/lea/investigate` — بسته CGNAT ← AAA ← فلو
+- `POST /api/lea/export` — خروجی پرونده + هش
+- `GET /api/lea/audit` — ردپای پرس‌وجو (admin)
 
-راهنمای ASR / PBA: **[CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)** · انگلیسی: [CGNAT_ASR.md](CGNAT_ASR.md)
+راهنمای ASR / PBA: **[CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)** · نهاد: **[LEA-FA.md](LEA-FA.md)**
 
 ## اتصال روتر (Cisco، MikroTik، sFlow)
 

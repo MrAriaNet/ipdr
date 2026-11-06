@@ -38,6 +38,26 @@ def upgrade_schema():
         "ALTER TABLE security_events ALTER COLUMN destination_ip TYPE VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS ix_ipdr_records_ip_version ON ipdr_records (ip_version)",
         "CREATE INDEX IF NOT EXISTS ix_ipdr_records_protocol_number ON ipdr_records (protocol_number)",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS is_sampled BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS sampling_rate INTEGER DEFAULT 1",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS sampled_bytes BIGINT DEFAULT 0",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS sampled_packets BIGINT DEFAULT 0",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS sample_pool BIGINT",
+        "CREATE INDEX IF NOT EXISTS ix_ipdr_records_is_sampled ON ipdr_records (is_sampled)",
+        # CGNAT PBA lookup helpers (no connection table — block range scan)
+        "CREATE INDEX IF NOT EXISTS ix_cgnat_outside_ports ON cgnat_port_blocks (outside_ip, port_start, port_end)",
+        "CREATE INDEX IF NOT EXISTS ix_cgnat_inside_time ON cgnat_port_blocks (inside_ip, event_time)",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS hold_case_id VARCHAR(100)",
+        "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS mapping_mode VARCHAR(20) DEFAULT 'pba'",
+        "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN DEFAULT FALSE",
+        "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS hold_case_id VARCHAR(100)",
+        "CREATE INDEX IF NOT EXISTS ix_ipdr_records_source_port ON ipdr_records (source_port)",
+        "CREATE INDEX IF NOT EXISTS ix_ipdr_records_destination_port ON ipdr_records (destination_port)",
+        "CREATE INDEX IF NOT EXISTS ix_ipdr_records_legal_hold ON ipdr_records (legal_hold)",
+        "CREATE INDEX IF NOT EXISTS ix_cgnat_legal_hold ON cgnat_port_blocks (legal_hold)",
     ]
     try:
         with engine.begin() as conn:
@@ -72,7 +92,7 @@ def check_database_connection():
         print("   - Ensure PostgreSQL is running (systemctl status postgresql)")
         print("   - Check .env and set DATABASE_URL")
         print("   - Create the database and user if they do not exist")
-        print("   - See INSTALL-FA.md (Persian) or README.md for Linux setup")
+        print("   - See INSTALL.md (English) or INSTALL-FA.md (Persian) for Linux setup")
         return False
 
 

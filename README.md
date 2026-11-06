@@ -2,14 +2,14 @@
 
 Collect, store, search, and analyze network traffic sessions. Built for Linux servers (Ubuntu, Debian, AlmaLinux) with **NetFlow / IPFIX / sFlow** intake from **Cisco**, **MikroTik**, and other exporters — **IPv4 and IPv6**.
 
-> **فارسی / Persian:** [README-FA.md](README-FA.md) · نصب کامل: [INSTALL-FA.md](INSTALL-FA.md)
+> **Install:** [INSTALL.md](INSTALL.md) · **فارسی / Persian:** [README-FA.md](README-FA.md) · [INSTALL-FA.md](INSTALL-FA.md)
 
 ## Features
 
 - IPDR records: source/destination (**IPv4 and IPv6**), ports, timing, volume, protocol, service, user id
 - Full IANA IP protocol mapping (`GET /api/ipdr/protocols`) — TCP, UDP, ICMPv6, GRE, ESP, SCTP, …
 - NetFlow **v1 / v5 / v7 / v8 / v9** and **IPFIX** collector (UDP 2055, dual-stack)
-- **sFlow v2 / v4 / v5** collector (UDP 6343, dual-stack)
+- **sFlow v2 / v4 / v5** collector (UDP 6343, dual-stack) with **sampling-rate volume extrapolation** (≈100% traffic estimate; see [SFLOW.md](SFLOW.md))
 - Optional JSON flow collector for labs (UDP 9999)
 - Deep Packet Inspection helpers (Scapy) for service / threat hints when packet bytes are available
 - Statistics, traffic summaries, and advanced text search
@@ -17,7 +17,8 @@ Collect, store, search, and analyze network traffic sessions. Built for Linux se
 - File logging with rotation under `logs/`
 - Billing model fields: prepaid, postpaid, hybrid
 - HTML dashboard and OpenAPI docs (`/docs`)
-- **CGNAT Port Block Allocation (PBA)** for Cisco ASR (e.g. 1001-X): store allocate/deallocate blocks and look up `public_ip:port` → subscriber IP for network security
+- **CGNAT Port Block Allocation (PBA)** for Cisco ASR (e.g. 1001-X): store allocate/deallocate blocks and look up `public_ip:port` → subscriber IP for network security (no XLATE/connection table)
+- **LEA / security workflow**: AAA binding, investigate bundle, warrant export + SHA-256, query audit, legal hold, retention — see [LEA.md](LEA.md)
 ## Requirements
 
 | Component | Version |
@@ -30,7 +31,7 @@ Collect, store, search, and analyze network traffic sessions. Built for Linux se
 
 ```bash
 sudo apt update   # or: sudo dnf install ...
-# Install python3, venv, pip, postgresql, build tools — see INSTALL-FA.md for distro commands
+# Install python3, venv, pip, postgresql, build tools — see INSTALL.md (EN) / INSTALL-FA.md (FA)
 
 git clone https://github.com/MrAriaNet/ipdr.git
 cd ipdr
@@ -45,7 +46,7 @@ python setup.py
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Production-style systemd unit: [deploy/ipdr.service](deploy/ipdr.service). Full Persian walkthrough (including firewall and systemd): [INSTALL-FA.md](INSTALL-FA.md).
+Production-style systemd unit: [deploy/ipdr.service](deploy/ipdr.service). Full walkthrough (firewall, systemd, CGNAT/LEA): [INSTALL.md](INSTALL.md) · فارسی: [INSTALL-FA.md](INSTALL-FA.md).
 
 ### Environment
 
@@ -93,9 +94,13 @@ Change default database credentials before any real deployment.
 - `POST /api/cgnat/blocks` — ingest allocate/deallocate
 - `POST /api/cgnat/blocks/bulk`
 - `GET /api/cgnat/blocks` — list/filter blocks
-- `GET /api/cgnat/lookup?public_ip=&public_port=&at=` — security mapping
+- `GET /api/cgnat/lookup?public_ip=&public_port=&at=` — security mapping (PBA; no connection/XLATE table; multi-match aware)
+- `GET /api/cgnat/lookup/by-subscriber?inside_ip=&at=` — reverse: subscriber → public port blocks
+- `POST /api/lea/investigate` — CGNAT → AAA → flows package
+- `POST /api/lea/export` — warrant export + manifest hash
+- `GET /api/lea/audit` — query audit trail (admin)
 
-Full ASR / PBA guide: **[CGNAT_ASR.md](CGNAT_ASR.md)** · فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)
+Full ASR / PBA guide: **[CGNAT_ASR.md](CGNAT_ASR.md)** · LEA: **[LEA.md](LEA.md)** · فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · [LEA-FA.md](LEA-FA.md)
 
 ## Router integration (Cisco, MikroTik, sFlow)
 
@@ -165,9 +170,10 @@ ipdr/
 │   ├── sample_data.py
 │   └── send_flow_data.py
 ├── README.md / README-FA.md
-├── INSTALL-FA.md               # Persian install & usage
+├── INSTALL.md / INSTALL-FA.md  # Install & usage (EN / FA)
 ├── ROUTER_SETUP.md / ROUTER_SETUP-FA.md
 ├── CGNAT_ASR.md / CGNAT_ASR-FA.md
+├── SFLOW.md / SFLOW-FA.md      # sFlow sampling vs ~100% volume
 ├── requirements.txt
 ├── setup.py
 ├── .env.example

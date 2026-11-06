@@ -131,10 +131,11 @@ def detect_ip_version(*ips: str) -> int:
 
 
 def unix_ts(seconds: float) -> datetime:
+    """Return timezone-aware UTC datetime (required for LEA time-bounded lookups)."""
     try:
-        return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(tzinfo=None)
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
     except (OSError, OverflowError, ValueError):
-        return datetime.utcnow()
+        return datetime.now(timezone.utc)
 
 
 def build_ipdr_record(
@@ -153,6 +154,11 @@ def build_ipdr_record(
     source: str = "netflow",
     protocol_number: Optional[int] = None,
     ip_version: Optional[int] = None,
+    is_sampled: bool = False,
+    sampling_rate: int = 1,
+    sampled_bytes: int = 0,
+    sampled_packets: int = 0,
+    sample_pool: Optional[int] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> IPDRRecordCreate:
     src = normalize_ip(source_ip)
@@ -189,6 +195,7 @@ def build_ipdr_record(
     if extra:
         info.update(extra)
 
+    rate = max(int(sampling_rate or 1), 1)
     return IPDRRecordCreate(
         source_ip=src,
         source_port=int(source_port or 0),
@@ -203,6 +210,11 @@ def build_ipdr_record(
         packets_uploaded=int(total_packets or 0),
         packets_downloaded=0,
         total_packets=int(total_packets or 0),
+        is_sampled=bool(is_sampled or rate > 1),
+        sampling_rate=rate,
+        sampled_bytes=int(sampled_bytes or 0),
+        sampled_packets=int(sampled_packets or 0),
+        sample_pool=int(sample_pool) if sample_pool is not None else None,
         session_start_time=session_start_time,
         session_end_time=session_end_time,
         duration_seconds=int(duration_seconds or 0),

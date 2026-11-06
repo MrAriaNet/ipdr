@@ -65,13 +65,23 @@ class CollectorService:
             self.netflow_collector.stop()
             self.netflow_collector = None
 
-    def start_sflow_collector(self, host: str = "0.0.0.0", port: int = 6343):
+    def start_sflow_collector(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 6343,
+        extrapolate: bool = True,
+    ):
         if self.sflow_collector and self.sflow_collector.running:
             logger.warning("sFlow collector is already running")
             return
-        self.sflow_collector = SFlowCollector(host=host, port=port, callback=self._make_flow_callback())
+        self.sflow_collector = SFlowCollector(
+            host=host,
+            port=port,
+            callback=self._make_flow_callback(),
+            extrapolate=extrapolate,
+        )
         self.sflow_collector.start()
-        logger.info(f"sFlow collector started on {host}:{port}")
+        logger.info(f"sFlow collector started on {host}:{port} extrapolate={extrapolate}")
 
     def stop_sflow_collector(self):
         if self.sflow_collector:

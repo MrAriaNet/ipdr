@@ -18,10 +18,10 @@ class IPDRRecord(Base):
     id = Column(Integer, primary_key=True, index=True)
     # Source information (IPv4 or IPv6 textual form)
     source_ip = Column(String(64), nullable=False, index=True)
-    source_port = Column(Integer, nullable=False)
+    source_port = Column(Integer, nullable=False, index=True)
     # Destination information
     destination_ip = Column(String(64), nullable=False, index=True)
-    destination_port = Column(Integer, nullable=False)
+    destination_port = Column(Integer, nullable=False, index=True)
     # Addressing / L4 protocol metadata
     ip_version = Column(Integer, default=4, index=True)  # 4 or 6
     protocol_number = Column(Integer, index=True)  # IANA IP protocol number 0-255
@@ -29,13 +29,19 @@ class IPDRRecord(Base):
     session_start_time = Column(DateTime(timezone=True), nullable=False, index=True)
     session_end_time = Column(DateTime(timezone=True), nullable=True)
     duration_seconds = Column(Integer, default=0)
-    # Data volume
+    # Data volume (for sFlow: total_* are extrapolated to ~100% when sampling_rate > 1)
     bytes_uploaded = Column(BigInteger, default=0)
     bytes_downloaded = Column(BigInteger, default=0)
     total_bytes = Column(BigInteger, default=0)
     packets_uploaded = Column(BigInteger, default=0)
     packets_downloaded = Column(BigInteger, default=0)
     total_packets = Column(BigInteger, default=0)
+    # Sampling metadata (sFlow / sampled exporters)
+    is_sampled = Column(Boolean, default=False, index=True)
+    sampling_rate = Column(Integer, default=1)  # 1 = unsampled / full; N = 1-in-N
+    sampled_bytes = Column(BigInteger, default=0)  # raw observed sample size
+    sampled_packets = Column(BigInteger, default=0)  # raw observed sample count
+    sample_pool = Column(BigInteger, nullable=True)  # sFlow sample_pool if present
     # Protocol and service information
     protocol = Column(String(32), nullable=False, index=True)  # TCP, UDP, ICMPv6, GRE, ...
     service_type = Column(String(50), index=True)  # HTTP, HTTPS, FTP, VoIP, etc.
@@ -56,6 +62,10 @@ class IPDRRecord(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     # Additional information
     additional_info = Column(Text)  # JSON string for additional information
+    # LEA / retention / integrity
+    content_hash = Column(String(64), nullable=True, index=True)
+    legal_hold = Column(Boolean, default=False, index=True)
+    hold_case_id = Column(String(100), nullable=True, index=True)
 
 
 class TrafficSummary(Base):
@@ -108,9 +118,10 @@ class CGNATPortBlock(Base):
     """
     CGNAT Port Block Allocation (PBA) records — e.g. Cisco ASR 1001-X.
 
-    Instead of one log line per NAT translation, the CGN allocates a contiguous
-    public port block to a subscriber. Security teams use these rows to map
-    public_ip:public_port -> subscriber (inside) IP at a given time.
+    Unlike NAT overload / PAT, PBA does NOT keep a per-connection (XLATE) table
+    for logging. The CGN only allocates / deallocates a contiguous public port
+    block to a subscriber. Security maps public_ip:public_port → inside_ip
+    using these block rows only (no inside_port / 5-tuple required).
     """
     __tablename__ = "cgnat_port_blocks"
 
@@ -143,7 +154,56 @@ class CGNATPortBlock(Base):
     source = Column(String(50), default="ipfix")  # ipfix, api, hsl
     raw_nat_event = Column(Integer, nullable=True)
     additional_info = Column(Text)
+    # pba = true port-block; overload = 1-port NAT create/delete fallback
+    mapping_mode = Column(String(20), default="pba", index=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    content_hash = Column(String(64), nullable=True, index=True)
+    legal_hold = Column(Boolean, default=False, index=True)
+    hold_case_id = Column(String(100), nullable=True, index=True)
+
+
+class SubscriberSession(Base):
+    """
+    AAA / RADIUS / DHCP / PPPoE session binding: framed (inside) IP → subscriber identity.
+    Used after CGNAT PBA lookup to answer 'who is the legal subscriber?'.
+    """
+    __tablename__ = "subscriber_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    framed_ip = Column(String(64), nullable=False, index=True)
+    subscriber_id = Column(String(100), nullable=False, index=True)
+    username = Column(String(200), nullable=True, index=True)
+    account_id = Column(String(100), nullable=True, index=True)
+    msisdn = Column(String(32), nullable=True, index=True)
+    imsi = Column(String(32), nullable=True, index=True)
+    mac = Column(String(32), nullable=True)
+    circuit_id = Column(String(200), nullable=True)
+    nas_ip = Column(String(64), nullable=True)
+    realm = Column(String(100), nullable=True)
+    session_id = Column(String(100), nullable=True, index=True)
+    valid_from = Column(DateTime(timezone=True), nullable=False, index=True)
+    valid_to = Column(DateTime(timezone=True), nullable=True, index=True)
+    source = Column(String(50), default="aaa")
+    additional_info = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class QueryAuditLog(Base):
+    """Append-only audit of LEA / security queries (who asked what)."""
+    __tablename__ = "query_audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True, server_default=func.now())
+    actor_id = Column(String(100), nullable=False, index=True)
+    actor_role = Column(String(50), nullable=True, index=True)
+    action = Column(String(50), nullable=False, index=True)  # cgnat_lookup, investigate, export, ...
+    case_ref = Column(String(100), nullable=True, index=True)
+    client_ip = Column(String(64), nullable=True)
+    request_params = Column(Text)  # JSON
+    result_found = Column(Boolean, default=False)
+    result_count = Column(Integer, default=0)
+    result_summary = Column(Text)  # JSON / short text
+    response_hash = Column(String(64), nullable=True, index=True)
 
 

@@ -270,6 +270,48 @@
             </div>
         </div>
 
+        <div class="filters" id="cgnatPanel">
+            <div class="filter-group" style="margin-bottom: 12px;">
+                <label style="font-size: 1.1em; color: #667eea; font-weight: bold;">CGNAT PBA lookup (no connection / XLATE table)</label>
+                <p style="color:#666; font-size:13px; margin-top:4px;">Map public IP:port → subscriber inside IP using port-block allocate/deallocate only.</p>
+            </div>
+            <div class="filters-grid">
+                <div class="filter-group">
+                    <label>Public IP:</label>
+                    <input type="text" id="cgnatPublicIp" placeholder="203.0.113.10">
+                </div>
+                <div class="filter-group">
+                    <label>Public port:</label>
+                    <input type="number" id="cgnatPublicPort" placeholder="1500" min="0" max="65535">
+                </div>
+                <div class="filter-group">
+                    <label>Incident time (optional):</label>
+                    <input type="datetime-local" id="cgnatAt">
+                </div>
+                <div class="filter-group">
+                    <label>Or subscriber inside IP:</label>
+                    <input type="text" id="cgnatInsideIp" placeholder="100.64.10.25">
+                </div>
+            </div>
+            <div class="filters-grid" style="margin-top:8px;">
+                <div class="filter-group">
+                    <label>Case ref (audit):</label>
+                    <input type="text" id="cgnatCaseRef" placeholder="CASE-2026-001">
+                </div>
+                <div class="filter-group">
+                    <label>API key (if auth on):</label>
+                    <input type="password" id="apiKey" placeholder="X-API-Key">
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+                <button class="btn btn-search" onclick="cgnatLookupPublic()">Lookup public → inside</button>
+                <button class="btn btn-stats" onclick="cgnatLookupSubscriber()">Lookup inside → blocks</button>
+                <button class="btn" onclick="leaInvestigate()">LEA investigate</button>
+            </div>
+            <div id="cgnatAmbiguous" style="display:none; margin-top:10px; padding:10px; background:#fff3cd; border-radius:6px; color:#856404; font-weight:600;"></div>
+            <pre id="cgnatResult" style="margin-top:12px; background:#f8f9fa; padding:12px; border-radius:6px; display:none; white-space:pre-wrap; font-size:13px;"></pre>
+        </div>
+
         <div class="stats-grid" id="statsGrid" style="display: none;">
             <div class="stat-card">
                 <h3>Total Data Volume</h3>
@@ -434,7 +476,7 @@
                     <td>${record.destination_ip}</td>
                     <td>${record.destination_port}</td>
                     <td>v${record.ip_version || 4}</td>
-                    <td>${record.protocol}</td>
+                    <td>${record.protocol}${record.is_sampled ? ' <span class="badge badge-danger" title="sFlow sampled; volume may be extrapolated">×' + (record.sampling_rate || '?') + '</span>' : ''}</td>
                     <td>${record.protocol_number != null ? record.protocol_number : '-'}</td>
                     <td>${record.service_type || '-'}</td>
                     <td>${formatBytes(record.total_bytes)}</td>
@@ -488,6 +530,100 @@
         function updatePagination() {
             document.getElementById('pageInfo').textContent = `Page ${currentPage}`;
             document.getElementById('prevBtn').disabled = currentPage === 1;
+        }
+
+        function _cgnatAtIso() {
+            const v = document.getElementById('cgnatAt').value;
+            return v ? new Date(v).toISOString() : undefined;
+        }
+
+        function _apiHeaders(json) {
+            const h = {};
+            if (json) h['Content-Type'] = 'application/json';
+            const key = (document.getElementById('apiKey') || {}).value;
+            if (key) h['X-API-Key'] = key.trim();
+            return h;
+        }
+
+        function _showCgnatResult(data) {
+            const el = document.getElementById('cgnatResult');
+            el.style.display = 'block';
+            el.textContent = JSON.stringify(data, null, 2);
+            const warn = document.getElementById('cgnatAmbiguous');
+            const amb = data && (data.ambiguous || (data.cgnat && data.cgnat.ambiguous));
+            if (amb) {
+                warn.style.display = 'block';
+                warn.textContent = 'AMBIGUOUS result — multiple candidates; do not treat as unique subscriber. Review matches[].';
+            } else {
+                warn.style.display = 'none';
+            }
+        }
+
+        async function cgnatLookupPublic() {
+            const publicIp = document.getElementById('cgnatPublicIp').value.trim();
+            const publicPort = document.getElementById('cgnatPublicPort').value;
+            if (!publicIp || publicPort === '') {
+                alert('Public IP and port are required');
+                return;
+            }
+            const params = new URLSearchParams({ public_ip: publicIp, public_port: publicPort });
+            const at = _cgnatAtIso();
+            if (at) params.append('at', at);
+            const caseRef = document.getElementById('cgnatCaseRef').value.trim();
+            if (caseRef) params.append('case_ref', caseRef);
+            try {
+                const res = await fetch('/api/cgnat/lookup?' + params.toString(), { headers: _apiHeaders() });
+                _showCgnatResult(await res.json());
+            } catch (e) {
+                _showCgnatResult({ error: String(e) });
+            }
+        }
+
+        async function cgnatLookupSubscriber() {
+            const insideIp = document.getElementById('cgnatInsideIp').value.trim();
+            if (!insideIp) {
+                alert('Subscriber inside IP is required');
+                return;
+            }
+            const params = new URLSearchParams({ inside_ip: insideIp });
+            const at = _cgnatAtIso();
+            if (at) params.append('at', at);
+            try {
+                const res = await fetch('/api/cgnat/lookup/by-subscriber?' + params.toString(), { headers: _apiHeaders() });
+                _showCgnatResult(await res.json());
+            } catch (e) {
+                _showCgnatResult({ error: String(e) });
+            }
+        }
+
+        async function leaInvestigate() {
+            const publicIp = document.getElementById('cgnatPublicIp').value.trim();
+            const publicPort = document.getElementById('cgnatPublicPort').value;
+            const at = _cgnatAtIso();
+            if (!publicIp || publicPort === '' || !at) {
+                alert('Public IP, port, and incident time are required for LEA investigate');
+                return;
+            }
+            const body = {
+                public_ip: publicIp,
+                public_port: parseInt(publicPort, 10),
+                at: at,
+                case_ref: document.getElementById('cgnatCaseRef').value.trim() || null,
+                window_seconds: 300,
+                include_flows: true,
+                resolve_subscriber: true,
+                legal_hold: false
+            };
+            try {
+                const res = await fetch('/api/lea/investigate', {
+                    method: 'POST',
+                    headers: _apiHeaders(true),
+                    body: JSON.stringify(body)
+                });
+                _showCgnatResult(await res.json());
+            } catch (e) {
+                _showCgnatResult({ error: String(e) });
+            }
         }
 
         function previousPage() {

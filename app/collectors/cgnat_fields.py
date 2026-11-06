@@ -57,6 +57,10 @@ NAT_EVENT_MAP = {
 def is_cgnat_pba_record(values: Dict[int, Any]) -> bool:
     """
     True when the template row looks like NAT/PBA rather than a normal flow.
+
+    True PBA (preferred): port-range IEs (361–364) — no per-connection table.
+    Fallback: natEvent + postNAT (classic create/delete); stored as a 1-port
+    "block" so overload-style HSL can still be queried the same way.
     """
     has_port_block = (
         IE_PORT_RANGE_START in values
@@ -69,7 +73,10 @@ def is_cgnat_pba_record(values: Dict[int, Any]) -> bool:
         or IE_POST_NAPT_SRC_PORT in values
     )
     has_nat_event = IE_NAT_EVENT in values
-    return bool(has_port_block or (has_nat_event and has_post_nat) or (has_post_nat and has_port_block))
+    # Port-block templates alone are enough (ASR PBA often has no XLATE fields)
+    if has_port_block and (has_post_nat or IE_IPV4_SRC_ADDR in values or IE_IPV6_SRC_ADDR in values):
+        return True
+    return bool(has_nat_event and has_post_nat)
 
 
 def normalize_event_type(nat_event: Optional[int], explicit: Optional[str] = None) -> str:
@@ -105,7 +112,13 @@ def values_to_cgnat_dict(
     unix_secs: int,
     is_ipfix: bool,
 ) -> Optional[Dict[str, Any]]:
-    """Build a CGNAT PBA dict suitable for CGNATPortBlockCreate / service."""
+    """
+    Build a CGNAT PBA dict suitable for CGNATPortBlockCreate / service.
+
+    Only block-level fields are required (inside_ip, outside_ip, port range).
+    Inside port / destination / 5-tuple are intentionally ignored — PBA has
+    no connection table like NAT overload.
+    """
     if not is_cgnat_pba_record(values):
         return None
 
@@ -119,8 +132,16 @@ def values_to_cgnat_dict(
     port_start = values.get(IE_PORT_RANGE_START)
     port_end = values.get(IE_PORT_RANGE_END)
     num_ports = values.get(IE_PORT_RANGE_NUM_PORTS)
+    step = values.get(IE_PORT_RANGE_STEP)
 
-    # Fallback: single post-NAPT source port as a 1-port "block"
+    # Derive end from start + num_ports when ASR omits portRangeEnd
+    if port_start is not None and port_end is None and num_ports is not None:
+        try:
+            port_end = int(port_start) + int(num_ports) - 1
+        except (TypeError, ValueError):
+            port_end = None
+
+    # Fallback: single post-NAPT source port as a 1-port "block" (overload HSL)
     if port_start is None and IE_POST_NAPT_SRC_PORT in values:
         port_start = values.get(IE_POST_NAPT_SRC_PORT)
         port_end = port_start
@@ -132,7 +153,16 @@ def values_to_cgnat_dict(
     if port_end is not None:
         port_end = int(port_end)
     elif num_ports is not None:
-        port_end = port_start + int(num_ports) - 1
+        # Optional non-contiguous step (rare); default contiguous block
+        try:
+            st = int(step) if step not in (None, 0, 1) else 1
+        except (TypeError, ValueError):
+            st = 1
+        if st <= 1:
+            port_end = port_start + int(num_ports) - 1
+        else:
+            # Contiguous storage: cover the span of stepped ports
+            port_end = port_start + (int(num_ports) - 1) * st
     else:
         port_end = port_start
     if port_end < port_start:
@@ -181,6 +211,13 @@ def values_to_cgnat_dict(
 
     ip_version = 6 if ":" in inside or ":" in outside else 4
 
+    has_range = (
+        IE_PORT_RANGE_START in values
+        or IE_PORT_RANGE_END in values
+        or IE_PORT_RANGE_NUM_PORTS in values
+    )
+    mapping_mode = "pba" if has_range and block_size > 1 else "overload"
+
     return {
         "event_time": event_time,
         "event_type": event_type,
@@ -200,6 +237,7 @@ def values_to_cgnat_dict(
         "router_ip": normalize_ip(router_ip, default=router_ip),
         "source": "ipfix" if is_ipfix else "netflow_v9",
         "raw_nat_event": nat_event_i,
+        "mapping_mode": mapping_mode,
         "additional_info": {
             "port_range_step": values.get(IE_PORT_RANGE_STEP),
             "nat_pool_id": values.get(IE_NAT_POOL_ID),

@@ -10,8 +10,9 @@ import time
 from dotenv import load_dotenv
 
 from app.database import engine, Base
-from app.routers import ipdr, security, collector, cgnat
+from app.routers import ipdr, security, collector, cgnat, lea
 from app.utils.logger import logger
+from app.utils.timeutil import utcnow
 
 load_dotenv()
 
@@ -22,8 +23,12 @@ logger.info("IPDR System starting up...")
 
 app = FastAPI(
     title="IPDR System - Traffic Detail Management and Analysis",
-    description="Comprehensive system for collecting, storing, and analyzing network traffic data",
-    version="1.0.0"
+    description=(
+        "IPDR for ISP ops + LEA/security: NetFlow/sFlow, CGNAT PBA (no XLATE table), "
+        "AAA binding, investigate/export with audit trail. "
+        "Set IPDR_AUTH_REQUIRED=true and IPDR_API_KEYS in production."
+    ),
+    version="1.1.0",
 )
 
 # Configure CORS from CORS_ORIGINS (comma-separated). Default: * without credentials.
@@ -48,6 +53,7 @@ app.include_router(ipdr.router)
 app.include_router(security.router)
 app.include_router(collector.router)
 app.include_router(cgnat.router)
+app.include_router(lea.router)
 
 # Request logging middleware
 @app.middleware("http")
@@ -212,11 +218,37 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """System health check"""
-    logger.info("Health check requested")
+    """System health check (includes UTC clock for NTP awareness)."""
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    from app.auth import auth_required
+
+    db_ok = False
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        db_ok = True
+    except Exception as e:
+        logger.warning(f"Health DB check failed: {e}")
+
+    now = utcnow()
     return {
-        "status": "healthy",
-        "message": "IPDR system is running"
+        "status": "healthy" if db_ok else "degraded",
+        "message": "IPDR system is running",
+        "utc_now": now.isoformat(),
+        "database": "ok" if db_ok else "error",
+        "auth_required": auth_required(),
+        "features": [
+            "netflow_ipfix",
+            "sflow_extrapolate",
+            "cgnat_pba",
+            "aaa_binding",
+            "lea_investigate_export",
+            "query_audit",
+            "retention_legal_hold",
+            "content_hash",
+        ],
     }
 
 

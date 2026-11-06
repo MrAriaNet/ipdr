@@ -18,6 +18,12 @@ class IPDRRecordBase(BaseModel):
     packets_uploaded: int = 0
     packets_downloaded: int = 0
     total_packets: int = 0
+    # Sampling (sFlow): total_bytes/packets are extrapolated when is_sampled and rate > 1
+    is_sampled: bool = False
+    sampling_rate: int = 1
+    sampled_bytes: int = 0
+    sampled_packets: int = 0
+    sample_pool: Optional[int] = None
     protocol: str
     protocol_number: Optional[int] = None
     ip_version: Optional[int] = 4
@@ -43,6 +49,9 @@ class IPDRRecordResponse(IPDRRecordBase):
     id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
+    content_hash: Optional[str] = None
+    legal_hold: Optional[bool] = False
+    hold_case_id: Optional[str] = None
 
 
 class TrafficQuery(BaseModel):
@@ -51,11 +60,15 @@ class TrafficQuery(BaseModel):
     end_time: Optional[datetime] = None
     source_ip: Optional[str] = None
     destination_ip: Optional[str] = None
+    source_port: Optional[int] = Field(None, ge=0, le=65535)
+    destination_port: Optional[int] = Field(None, ge=0, le=65535)
     protocol: Optional[str] = None
     protocol_number: Optional[int] = None
     ip_version: Optional[int] = None
     service_type: Optional[str] = None
     user_id: Optional[str] = None
+    # When true: include sessions overlapping the window (not only started inside)
+    session_overlap: bool = False
     limit: int = Field(default=100, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
 
@@ -117,6 +130,7 @@ class CGNATPortBlockCreate(BaseModel):
     source: Optional[str] = "api"
     raw_nat_event: Optional[int] = None
     additional_info: Optional[Dict[str, Any]] = None
+    mapping_mode: Optional[str] = "pba"  # pba | overload
 
 
 class CGNATPortBlockResponse(BaseModel):
@@ -141,11 +155,31 @@ class CGNATPortBlockResponse(BaseModel):
     router_ip: Optional[str]
     source: Optional[str]
     raw_nat_event: Optional[int]
+    mapping_mode: Optional[str] = "pba"
     created_at: datetime
 
 
+class CGNATMatchItem(BaseModel):
+    inside_ip: str
+    outside_ip: str
+    port_start: int
+    port_end: int
+    port_block_size: Optional[int] = None
+    protocol: Optional[str] = None
+    event_time: Optional[datetime] = None
+    released_at: Optional[datetime] = None
+    subscriber_id: Optional[str] = None
+    block_id: Optional[int] = None
+    mapping_mode: Optional[str] = "pba"
+
+
 class CGNATLookupResponse(BaseModel):
-    """Result of public_ip:port → subscriber mapping for security teams."""
+    """
+    Result of public_ip:port → subscriber mapping for security teams.
+
+    PBA only — no NAT connection / XLATE / inside_port required.
+    If multiple blocks overlap, ambiguous=True and matches lists all candidates.
+    """
     found: bool
     public_ip: str
     public_port: int
@@ -160,8 +194,134 @@ class CGNATLookupResponse(BaseModel):
     released_at: Optional[datetime] = None
     subscriber_id: Optional[str] = None
     block_id: Optional[int] = None
+    mapping_mode: Optional[str] = None
+    match_count: int = 0
+    ambiguous: bool = False
+    matches: List[CGNATMatchItem] = []
+    message: Optional[str] = None
+
+
+class CGNATSubscriberBlockItem(BaseModel):
+    block_id: int
+    outside_ip: str
+    port_start: int
+    port_end: int
+    port_block_size: Optional[int] = None
+    protocol: Optional[str] = None
+    event_time: Optional[datetime] = None
+    released_at: Optional[datetime] = None
+    is_active: Optional[bool] = None
+    subscriber_id: Optional[str] = None
+    mapping_mode: Optional[str] = None
+
+
+class CGNATSubscriberBlocksResponse(BaseModel):
+    """Reverse PBA lookup: inside_ip → public port block(s) at a given time."""
+    found: bool
+    inside_ip: str
+    at_time: datetime
+    blocks: List[CGNATSubscriberBlockItem] = []
     message: Optional[str] = None
 
 
 class CGNATBulkCreate(BaseModel):
     records: List[CGNATPortBlockCreate]
+
+
+class SubscriberSessionCreate(BaseModel):
+    framed_ip: str
+    subscriber_id: str
+    username: Optional[str] = None
+    account_id: Optional[str] = None
+    msisdn: Optional[str] = None
+    imsi: Optional[str] = None
+    mac: Optional[str] = None
+    circuit_id: Optional[str] = None
+    nas_ip: Optional[str] = None
+    realm: Optional[str] = None
+    session_id: Optional[str] = None
+    valid_from: datetime
+    valid_to: Optional[datetime] = None
+    source: Optional[str] = "aaa"
+    additional_info: Optional[Dict[str, Any]] = None
+
+
+class SubscriberSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    framed_ip: str
+    subscriber_id: str
+    username: Optional[str] = None
+    account_id: Optional[str] = None
+    msisdn: Optional[str] = None
+    imsi: Optional[str] = None
+    mac: Optional[str] = None
+    circuit_id: Optional[str] = None
+    nas_ip: Optional[str] = None
+    realm: Optional[str] = None
+    session_id: Optional[str] = None
+    valid_from: datetime
+    valid_to: Optional[datetime] = None
+    source: Optional[str] = None
+    created_at: datetime
+
+
+class SubscriberResolveResponse(BaseModel):
+    found: bool
+    framed_ip: str
+    at_time: datetime
+    subscriber_id: Optional[str] = None
+    username: Optional[str] = None
+    account_id: Optional[str] = None
+    msisdn: Optional[str] = None
+    imsi: Optional[str] = None
+    session_id: Optional[int] = None
+    match_count: int = 0
+    ambiguous: bool = False
+    message: Optional[str] = None
+
+
+class LEAInvestigateRequest(BaseModel):
+    public_ip: str
+    public_port: int = Field(..., ge=0, le=65535)
+    at: datetime
+    case_ref: Optional[str] = None
+    window_seconds: int = Field(default=300, ge=0, le=86400)
+    include_flows: bool = True
+    resolve_subscriber: bool = True
+    legal_hold: bool = False
+    flow_limit: int = Field(default=500, ge=1, le=5000)
+
+
+class LEAExportRequest(BaseModel):
+    case_ref: str
+    format: str = Field(default="json", pattern="^(json|csv|ndjson)$")
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    source_ip: Optional[str] = None
+    destination_ip: Optional[str] = None
+    source_port: Optional[int] = None
+    destination_port: Optional[int] = None
+    public_ip: Optional[str] = None
+    public_port: Optional[int] = None
+    at: Optional[datetime] = None
+    legal_hold: bool = True
+    limit: int = Field(default=10000, ge=1, le=100000)
+
+
+class QueryAuditResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    event_time: datetime
+    actor_id: str
+    actor_role: Optional[str] = None
+    action: str
+    case_ref: Optional[str] = None
+    client_ip: Optional[str] = None
+    request_params: Optional[str] = None
+    result_found: bool
+    result_count: int
+    result_summary: Optional[str] = None
+    response_hash: Optional[str] = None

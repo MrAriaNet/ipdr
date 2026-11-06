@@ -1,9 +1,10 @@
 """
 API routes for managing network traffic collectors
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.auth import AuthContext, require_role
 from app.services.collector_service import collector_service
 from app.utils.logger import logger
 
@@ -17,12 +18,20 @@ class CollectorConfig(BaseModel):
         default="netflow",
         description="netflow (v1/v5/v7/v8/v9/IPFIX), sflow, or simple",
     )
+    # sFlow only: multiply sample sizes by sampling_rate to approximate 100% volume
+    extrapolate: bool = Field(
+        default=True,
+        description="sFlow: extrapolate sampled bytes/packets by sampling_rate (approx. full traffic volume)",
+    )
 
 
 @router.post("/start")
-async def start_collector(config: CollectorConfig):
+async def start_collector(
+    config: CollectorConfig,
+    auth: AuthContext = Depends(require_role("admin")),
+):
     """
-    Start a network traffic collector
+    Start a network traffic collector (admin only).
 
     - **netflow**: NetFlow v1/v5/v7/v8/v9 and IPFIX (default UDP 2055)
     - **sflow**: sFlow v2/v4/v5 (default UDP 6343)
@@ -44,14 +53,23 @@ async def start_collector(config: CollectorConfig):
         if ctype == "sflow":
             # Default sFlow port is 6343 when client leaves the NetFlow default
             port = 6343 if config.port == 2055 else config.port
-            collector_service.start_sflow_collector(host=config.host, port=port)
+            collector_service.start_sflow_collector(
+                host=config.host,
+                port=port,
+                extrapolate=config.extrapolate,
+            )
             return {
                 "status": "started",
                 "type": "sflow",
                 "host": config.host,
                 "port": port,
                 "supports": ["v2", "v4", "v5"],
-                "message": "sFlow collector started successfully",
+                "extrapolate": config.extrapolate,
+                "message": (
+                    "sFlow started; volumes extrapolated by sampling_rate (~100% traffic estimate)"
+                    if config.extrapolate
+                    else "sFlow started; storing raw sample sizes only (not 100% traffic)"
+                ),
             }
         if ctype == "simple":
             port = 9999 if config.port == 2055 else config.port
@@ -74,6 +92,7 @@ async def start_collector(config: CollectorConfig):
 @router.post("/stop")
 async def stop_collector(
     collector_type: str = Query("all", description="netflow, sflow, simple, or all"),
+    auth: AuthContext = Depends(require_role("admin")),
 ):
     try:
         ctype = collector_type.lower().strip()
@@ -115,6 +134,12 @@ async def get_collector_status():
             "host": sf.host if sf else None,
             "port": sf.port if sf else None,
             "supports": ["v2", "v4", "v5"],
+            "extrapolate": sf.extrapolate if sf else None,
+            "note": (
+                "Volumes × sampling_rate ≈ full traffic; flow rows remain sampled"
+                if sf and sf.extrapolate
+                else "Raw sample sizes only" if sf else None
+            ),
         },
         "simple": {
             "running": bool(sm and sm.running),

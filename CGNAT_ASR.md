@@ -12,6 +12,17 @@ On platforms such as **Cisco ASR 1001-X**, Carrier-Grade NAT can use **Port Bloc
 
 This IPDR system stores PBA allocate/deallocate events and exposes a **lookup API** for that mapping.
 
+## PBA vs NAT overload (no connection table)
+
+| | **NAT overload / PAT** | **CGNAT PBA** |
+|--|------------------------|---------------|
+| Table | One XLATE / translation row per session | **None** — only port-block allocate/deallocate |
+| Logging | create/delete per connection | `allocate` / `deallocate` of a block (e.g. 1024 ports) |
+| Security query | `public_ip + public_port` on the translation table | Same inputs, matched against the **port range** |
+| What IPDR stores | Not required for PBA security answer | Only `inside_ip`, `outside_ip`, `port_start`–`port_end`, timestamps |
+
+**For network security:** in PBA mode you do **not** need a connection table like overload. Keep block events; any `public_port` inside the range maps to the same `inside_ip`.
+
 ## Data model (what we store)
 
 | Field | Meaning |
@@ -66,6 +77,8 @@ Bulk: `POST /api/cgnat/blocks/bulk` with `{ "records": [ ... ] }`.
 
 ## Security lookup (LEA / SOC)
 
+Inputs: public IP + public port (+ incident time). **No** inside_port and **no** connection table.
+
 ```bash
 curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
 ```
@@ -82,8 +95,14 @@ Example response:
   "port_end": 2047,
   "port_block_size": 1024,
   "event_time": "2026-11-06T12:00:00",
-  "message": "OK"
+  "message": "OK — mapped via port-block allocation (no NAT connection/XLATE entry required)"
 }
+```
+
+Reverse lookup (subscriber IP → public blocks at that time):
+
+```bash
+curl -s "http://127.0.0.1:8000/api/cgnat/lookup/by-subscriber?inside_ip=100.64.10.25&at=2026-11-06T12:30:00"
 ```
 
 List blocks: `GET /api/cgnat/blocks?outside_ip=203.0.113.10&is_active=true`

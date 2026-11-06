@@ -12,6 +12,17 @@
 
 این سیستم رویدادهای allocate/deallocate را ذخیره می‌کند و API جستجو برای همان نگاشت را در اختیار می‌گذارد.
 
+## PBA در برابر NAT Overload (بدون جدول کانکشن)
+
+| | **NAT Overload / PAT** | **CGNAT PBA** |
+|--|------------------------|---------------|
+| جدول | به‌ازای هر session یک ردیف XLATE / translation | **ندارد** — فقط اختصاص/آزادسازی بلوک پورت |
+| لاگ | create/delete هر کانکشن | `allocate` / `deallocate` بلوک (مثلاً ۱۰۲۴ پورت) |
+| جستجوی امنیت | معمولاً `public_ip + public_port` (+ گاهی پروتکل) روی جدول translation | همان ورودی‌ها، ولی روی **بازهٔ پورت** مشترک |
+| فیلدهای لازم در IPDR | لزوماً داخل‌پورت / ۵تایی لازم نیست برای پاسخ امنیتی؛ در PBA اصلاً ذخیره نمی‌شود | فقط `inside_ip`، `outside_ip`، `port_start`–`port_end`، زمان |
+
+**نتیجه برای امنیت شبکه:** در حالت PBA نیازی به جدول کانکشن مثل overload نیست. کافی است رویدادهای بلوک را نگه دارید؛ هر `public_port` داخل بازه به همان `inside_ip` نگاشت می‌شود.
+
 ## مدل داده (چه چیزی ذخیره می‌شود)
 
 | فیلد | معنی |
@@ -66,6 +77,8 @@ curl -X POST "http://127.0.0.1:8000/api/cgnat/blocks" \
 
 ## جستجوی امنیت (LEA / SOC)
 
+ورودی فقط: IP عمومی + پورت عمومی (+ زمان حادثه). **بدون** inside_port و بدون جدول کانکشن.
+
 ```bash
 curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
 ```
@@ -82,8 +95,14 @@ curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_po
   "port_end": 2047,
   "port_block_size": 1024,
   "event_time": "2026-11-06T12:00:00",
-  "message": "OK"
+  "message": "OK — mapped via port-block allocation (no NAT connection/XLATE entry required)"
 }
+```
+
+جستجوی معکوس (IP مشترک ← بلوک‌های عمومی در آن زمان):
+
+```bash
+curl -s "http://127.0.0.1:8000/api/cgnat/lookup/by-subscriber?inside_ip=100.64.10.25&at=2026-11-06T12:30:00"
 ```
 
 لیست بلوک‌ها: `GET /api/cgnat/blocks?outside_ip=203.0.113.10&is_active=true`
