@@ -2,7 +2,7 @@
 
 Collect, store, search, and analyze network traffic sessions. Built for Linux servers (Ubuntu, Debian, AlmaLinux) with **NetFlow / IPFIX / sFlow** intake from **Cisco**, **MikroTik**, and other exporters — **IPv4 and IPv6**.
 
-> **Persian install & usage guide:** [INSTALL-FA.md](INSTALL-FA.md)
+> **فارسی / Persian:** [README-FA.md](README-FA.md) · نصب کامل: [INSTALL-FA.md](INSTALL-FA.md)
 
 ## Features
 
@@ -17,7 +17,7 @@ Collect, store, search, and analyze network traffic sessions. Built for Linux se
 - File logging with rotation under `logs/`
 - Billing model fields: prepaid, postpaid, hybrid
 - HTML dashboard and OpenAPI docs (`/docs`)
-
+- **CGNAT Port Block Allocation (PBA)** for Cisco ASR (e.g. 1001-X): store allocate/deallocate blocks and look up `public_ip:port` → subscriber IP for network security
 ## Requirements
 
 | Component | Version |
@@ -89,6 +89,14 @@ Change default database credentials before any real deployment.
 - `POST /api/security/events`
 - `PATCH /api/security/events/{id}/resolve`
 
+### CGNAT PBA (ASR / CGN)
+- `POST /api/cgnat/blocks` — ingest allocate/deallocate
+- `POST /api/cgnat/blocks/bulk`
+- `GET /api/cgnat/blocks` — list/filter blocks
+- `GET /api/cgnat/lookup?public_ip=&public_port=&at=` — security mapping
+
+Full ASR / PBA guide: **[CGNAT_ASR.md](CGNAT_ASR.md)** · فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)
+
 ## Router integration (Cisco, MikroTik, sFlow)
 
 ```bash
@@ -124,8 +132,8 @@ add dst-address=192.168.1.100:2055 version=5
 
 Supports NetFlow v9 / IPFIX templates, Flexible NetFlow (IPv4/IPv6), IOS-XR, and sFlow agents.
 
-- Full procedures: **[ROUTER_SETUP.md](ROUTER_SETUP.md)**
-- Ready-to-paste snippets (Cisco, MikroTik, sFlow, firewall): **[examples/router_config_examples.md](examples/router_config_examples.md)**
+- Full procedures: **[ROUTER_SETUP.md](ROUTER_SETUP.md)** · فارسی: [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md)
+- Ready-to-paste snippets: **[examples/router_config_examples.md](examples/router_config_examples.md)** · فارسی: [examples/router_config_examples-FA.md](examples/router_config_examples-FA.md)
 
 ## Examples
 
@@ -152,11 +160,14 @@ ipdr/
 │   └── static/dashboard.html
 ├── deploy/ipdr.service         # systemd unit
 ├── examples/
-│   ├── router_config_examples.md
+│   ├── router_config_examples.md / *-FA.md
+│   ├── cgnat_pba_sample.py
 │   ├── sample_data.py
 │   └── send_flow_data.py
+├── README.md / README-FA.md
 ├── INSTALL-FA.md               # Persian install & usage
-├── ROUTER_SETUP.md             # Cisco / MikroTik / sFlow guide
+├── ROUTER_SETUP.md / ROUTER_SETUP-FA.md
+├── CGNAT_ASR.md / CGNAT_ASR-FA.md
 ├── requirements.txt
 ├── setup.py
 ├── .env.example

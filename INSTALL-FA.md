@@ -1,7 +1,9 @@
 # راهنمای نصب و استفاده IPDR (فارسی)
 
-این سند نصب روی **سرور لینوکس** (Ubuntu، Debian، AlmaLinux) و استفاده روزمره را به فارسی توضیح می‌دهد.  
-متن برنامه، API و مستندات فنی اصلی به **انگلیسی** هستند.
+این سند نصب روی **سرور لینوکس** (Ubuntu، Debian، AlmaLinux) و استفاده روزمره را به فارسی توضیح می‌دهد.
+
+> کد و API به انگلیسی است. بقیهٔ مستندات Markdown هم نسخهٔ فارسی دارند:  
+> [README-FA.md](README-FA.md) · [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md) · [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · [examples/router_config_examples-FA.md](examples/router_config_examples-FA.md)
 
 > رمزهای نمونه فقط برای آزمایش هستند. در محیط واقعی حتماً آن‌ها را عوض کنید.
 
@@ -331,8 +333,29 @@ sudo tcpdump -ni any udp port 2055 -c 10
 
 ---
 
+## ۱۴. CGNAT Port Block Allocation (PBA) — سیسکو ASR
+
+اگر روی **ASR 1001-X** (یا مشابه) CGNAT به‌صورت **PBA** دارید، به‌جای لاگ تک‌تک translationها، بلوک پورت (مثلاً ۵۱۲ یا ۱۰۲۴ تایی) به مشترک اختصاص داده می‌شود. این سیستم همان رویدادهای allocate/deallocate را ذخیره می‌کند تا **امنیت شبکه** بتواند از روی IP:Port عمومی، IP داخلی مشترک را پیدا کند.
+
+```bash
+# کالکتور IPFIX (پورت 2055) را روشن کنید تا قالب‌های NAT/PBA از ASR وارد شوند
+curl -X POST "http://127.0.0.1:8000/api/collector/start" \
+  -H "Content-Type: application/json" \
+  -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
+
+# جستجوی امنیت: IP و پورت عمومی → مشترک
+curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
+```
+
+جزئیات پیکربندی ASR و مدل داده: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · انگلیسی: [CGNAT_ASR.md](CGNAT_ASR.md)  
+نمونه تست API: `python examples/cgnat_pba_sample.py`
+
 ## لینک‌های مرتبط
 
-- معرفی و نصب انگلیسی: [README.md](README.md)
-- اتصال روتر (انگلیسی، کامل): [ROUTER_SETUP.md](ROUTER_SETUP.md)
-- نمونه‌های پیکربندی روتر: [examples/router_config_examples.md](examples/router_config_examples.md)
+| موضوع | فارسی | English |
+|-------|--------|---------|
+| معرفی پروژه | [README-FA.md](README-FA.md) | [README.md](README.md) |
+| نصب و استفاده | [INSTALL-FA.md](INSTALL-FA.md) (همین فایل) | — |
+| اتصال روتر | [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md) | [ROUTER_SETUP.md](ROUTER_SETUP.md) |
+| نمونه‌های روتر | [examples/router_config_examples-FA.md](examples/router_config_examples-FA.md) | [examples/router_config_examples.md](examples/router_config_examples.md) |
+| CGNAT PBA / ASR | [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) | [CGNAT_ASR.md](CGNAT_ASR.md) |

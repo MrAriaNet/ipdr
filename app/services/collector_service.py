@@ -7,19 +7,20 @@ from app.collectors.netflow_collector import NetFlowCollector, SimpleFlowCollect
 from app.collectors.sflow_collector import SFlowCollector
 from app.schemas import IPDRRecordCreate
 from app.services.ipdr_service import IPDRService
+from app.services.cgnat_service import CGNATService
 from app.database import SessionLocal
 from app.utils.logger import logger
 
 
 class CollectorService:
-    """Service for managing NetFlow/IPFIX, sFlow, and simple JSON collectors"""
+    """Service for managing NetFlow/IPFIX, sFlow, simple JSON, and CGNAT PBA ingest"""
 
     def __init__(self):
         self.netflow_collector: Optional[NetFlowCollector] = None
         self.sflow_collector: Optional[SFlowCollector] = None
         self.simple_collector: Optional[SimpleFlowCollector] = None
 
-    def _make_callback(self):
+    def _make_flow_callback(self):
         def process_flow(record: IPDRRecordCreate):
             try:
                 db = SessionLocal()
@@ -33,13 +34,31 @@ class CollectorService:
 
         return process_flow
 
+    def _make_cgnat_callback(self):
+        def process_cgnat(payload: dict):
+            try:
+                db = SessionLocal()
+                try:
+                    CGNATService.create_from_dict(db, payload)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.error(f"Error saving CGNAT PBA record: {e}", exc_info=True)
+
+        return process_cgnat
+
     def start_netflow_collector(self, host: str = "0.0.0.0", port: int = 2055):
         if self.netflow_collector and self.netflow_collector.running:
             logger.warning("NetFlow collector is already running")
             return
-        self.netflow_collector = NetFlowCollector(host=host, port=port, callback=self._make_callback())
+        self.netflow_collector = NetFlowCollector(
+            host=host,
+            port=port,
+            callback=self._make_flow_callback(),
+            cgnat_callback=self._make_cgnat_callback(),
+        )
         self.netflow_collector.start()
-        logger.info(f"NetFlow/IPFIX collector started on {host}:{port}")
+        logger.info(f"NetFlow/IPFIX (+CGNAT PBA) collector started on {host}:{port}")
 
     def stop_netflow_collector(self):
         if self.netflow_collector:
@@ -50,7 +69,7 @@ class CollectorService:
         if self.sflow_collector and self.sflow_collector.running:
             logger.warning("sFlow collector is already running")
             return
-        self.sflow_collector = SFlowCollector(host=host, port=port, callback=self._make_callback())
+        self.sflow_collector = SFlowCollector(host=host, port=port, callback=self._make_flow_callback())
         self.sflow_collector.start()
         logger.info(f"sFlow collector started on {host}:{port}")
 
@@ -63,7 +82,7 @@ class CollectorService:
         if self.simple_collector and self.simple_collector.running:
             logger.warning("Simple collector is already running")
             return
-        self.simple_collector = SimpleFlowCollector(host=host, port=port, callback=self._make_callback())
+        self.simple_collector = SimpleFlowCollector(host=host, port=port, callback=self._make_flow_callback())
         self.simple_collector.start()
         logger.info(f"Simple flow collector started on {host}:{port}")
 

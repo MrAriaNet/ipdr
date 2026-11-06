@@ -52,10 +52,17 @@ from app.utils.logger import logger
 class NetFlowCollector:
     """UDP collector for NetFlow v1/v5/v7/v8/v9 and IPFIX."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 2055, callback: Optional[Callable] = None):
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 2055,
+        callback: Optional[Callable] = None,
+        cgnat_callback: Optional[Callable] = None,
+    ):
         self.host = host
         self.port = port
         self.callback = callback
+        self.cgnat_callback = cgnat_callback
         self.socket = None
         self.running = False
         self.thread = None
@@ -101,6 +108,10 @@ class NetFlowCollector:
     def _emit(self, record):
         if self.callback:
             self.callback(record)
+
+    def _emit_cgnat(self, payload: dict):
+        if self.cgnat_callback:
+            self.cgnat_callback(payload)
 
     def _process_packet(self, data: bytes, addr: tuple):
         try:
@@ -472,6 +483,18 @@ class NetFlowCollector:
                 if _ent == 0:  # ignore enterprise-specific for IPDR mapping
                     values[ie_id] = value
             offset += record_len
+            # CGNAT / NAT PBA templates (Cisco ASR etc.)
+            try:
+                from app.collectors.cgnat_fields import is_cgnat_pba_record, values_to_cgnat_dict
+
+                if is_cgnat_pba_record(values):
+                    cgnat = values_to_cgnat_dict(values, addr[0], unix_secs, is_ipfix)
+                    if cgnat:
+                        self._emit_cgnat(cgnat)
+                        continue
+            except Exception as e:
+                logger.debug(f"CGNAT parse skip: {e}")
+
             record = self._values_to_record(values, addr[0], sys_uptime, unix_secs, is_ipfix)
             if record:
                 self._emit(record)

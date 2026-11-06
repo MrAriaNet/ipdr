@@ -1,5 +1,7 @@
 # Router Configuration Examples
 
+> **فارسی:** [router_config_examples-FA.md](router_config_examples-FA.md)
+
 Companion snippets for [ROUTER_SETUP.md](../ROUTER_SETUP.md).  
 Replace `192.168.1.100` with your IPDR server IP.
 
@@ -205,5 +207,5 @@ curl -X POST "http://127.0.0.1:8000/api/collector/start" \
 curl -s "http://127.0.0.1:8000/api/collector/status"
 ```
 
-Full procedures and troubleshooting: [ROUTER_SETUP.md](../ROUTER_SETUP.md)  
-Persian install & usage: [INSTALL-FA.md](../INSTALL-FA.md)
+Full procedures: [ROUTER_SETUP.md](../ROUTER_SETUP.md) · فارسی: [ROUTER_SETUP-FA.md](../ROUTER_SETUP-FA.md)  
+Persian install: [INSTALL-FA.md](../INSTALL-FA.md)

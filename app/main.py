@@ -10,7 +10,7 @@ import time
 from dotenv import load_dotenv
 
 from app.database import engine, Base
-from app.routers import ipdr, security, collector
+from app.routers import ipdr, security, collector, cgnat
 from app.utils.logger import logger
 
 load_dotenv()
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(ipdr.router)
 app.include_router(security.router)
 app.include_router(collector.router)
+app.include_router(cgnat.router)
 
 # Request logging middleware
 @app.middleware("http")

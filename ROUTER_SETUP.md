@@ -1,5 +1,7 @@
 # Router Integration Guide
 
+> **فارسی:** [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md)
+
 Connect Cisco, MikroTik, and sFlow-capable devices to IPDR so traffic sessions are stored, searched, and analyzed.
 
 Replace `192.168.1.100` with the IP address of your IPDR server in every example below.
@@ -277,5 +279,5 @@ python3 examples/send_flow_data.py
 | No rows in dashboard | Database up, collector callback errors in logs, time filters on dashboard |
 | Partial / wrong timestamps | Enable NTP on exporters; for uptime-based fields check exporter boot time |
 
-Ready-to-paste snippets: [examples/router_config_examples.md](examples/router_config_examples.md)  
-Persian install and usage (including routers): [INSTALL-FA.md](INSTALL-FA.md)
+Ready-to-paste snippets: [examples/router_config_examples.md](examples/router_config_examples.md) · فارسی: [examples/router_config_examples-FA.md](examples/router_config_examples-FA.md)  
+Persian install and usage: [INSTALL-FA.md](INSTALL-FA.md) · CGNAT PBA فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)

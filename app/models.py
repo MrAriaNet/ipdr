@@ -95,3 +95,55 @@ class SecurityEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
+class CGNATEventType(str, enum.Enum):
+    """CGNAT Port Block Allocation lifecycle"""
+    ALLOCATE = "allocate"
+    DEALLOCATE = "deallocate"
+    CREATE = "create"
+    DELETE = "delete"
+    UNKNOWN = "unknown"
+
+
+class CGNATPortBlock(Base):
+    """
+    CGNAT Port Block Allocation (PBA) records — e.g. Cisco ASR 1001-X.
+
+    Instead of one log line per NAT translation, the CGN allocates a contiguous
+    public port block to a subscriber. Security teams use these rows to map
+    public_ip:public_port -> subscriber (inside) IP at a given time.
+    """
+    __tablename__ = "cgnat_port_blocks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)
+    event_type = Column(Enum(CGNATEventType), default=CGNATEventType.ALLOCATE, index=True)
+
+    # Subscriber / inside (pre-NAT)
+    inside_ip = Column(String(64), nullable=False, index=True)
+    # Public / outside (post-NAT)
+    outside_ip = Column(String(64), nullable=False, index=True)
+
+    port_start = Column(Integer, nullable=False, index=True)
+    port_end = Column(Integer, nullable=False, index=True)
+    port_block_size = Column(Integer, nullable=True)
+
+    protocol = Column(String(32), index=True)  # TCP / UDP / ANY
+    protocol_number = Column(Integer, index=True)
+    ip_version = Column(Integer, default=4, index=True)
+
+    vrf_id = Column(Integer, nullable=True, index=True)
+    nat_pool_name = Column(String(100), nullable=True)
+    subscriber_id = Column(String(100), nullable=True, index=True)
+
+    # When the block was released (filled on deallocate or inferred)
+    released_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+
+    router_ip = Column(String(64), index=True)
+    source = Column(String(50), default="ipfix")  # ipfix, api, hsl
+    raw_nat_event = Column(Integer, nullable=True)
+    additional_info = Column(Text)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+

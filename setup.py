@@ -102,6 +102,7 @@ def main():
     print("   3. View dashboard: http://localhost:8000/dashboard")
     print("   4. API docs: http://localhost:8000/docs")
     print("   5. Protocol list: http://localhost:8000/api/ipdr/protocols")
+    print("   6. CGNAT PBA lookup: http://localhost:8000/api/cgnat/lookup")
     print()
 
 

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
-from typing import Optional, Dict, Any
-from app.models import BillingModel
+from typing import Optional, Dict, Any, List
+from app.models import BillingModel, CGNATEventType
 
 
 class IPDRRecordBase(BaseModel):
@@ -95,3 +95,73 @@ class SecurityEventResponse(BaseModel):
     description: str
     is_resolved: bool
     created_at: datetime
+
+
+class CGNATPortBlockCreate(BaseModel):
+    event_time: datetime
+    event_type: CGNATEventType = CGNATEventType.ALLOCATE
+    inside_ip: str
+    outside_ip: str
+    port_start: int = Field(..., ge=0, le=65535)
+    port_end: int = Field(..., ge=0, le=65535)
+    port_block_size: Optional[int] = None
+    protocol: Optional[str] = "ANY"
+    protocol_number: Optional[int] = None
+    ip_version: Optional[int] = 4
+    vrf_id: Optional[int] = None
+    nat_pool_name: Optional[str] = None
+    subscriber_id: Optional[str] = None
+    released_at: Optional[datetime] = None
+    is_active: Optional[bool] = True
+    router_ip: Optional[str] = None
+    source: Optional[str] = "api"
+    raw_nat_event: Optional[int] = None
+    additional_info: Optional[Dict[str, Any]] = None
+
+
+class CGNATPortBlockResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    event_time: datetime
+    event_type: CGNATEventType
+    inside_ip: str
+    outside_ip: str
+    port_start: int
+    port_end: int
+    port_block_size: Optional[int]
+    protocol: Optional[str]
+    protocol_number: Optional[int]
+    ip_version: Optional[int]
+    vrf_id: Optional[int]
+    nat_pool_name: Optional[str]
+    subscriber_id: Optional[str]
+    released_at: Optional[datetime]
+    is_active: bool
+    router_ip: Optional[str]
+    source: Optional[str]
+    raw_nat_event: Optional[int]
+    created_at: datetime
+
+
+class CGNATLookupResponse(BaseModel):
+    """Result of public_ip:port → subscriber mapping for security teams."""
+    found: bool
+    public_ip: str
+    public_port: int
+    at_time: datetime
+    inside_ip: Optional[str] = None
+    outside_ip: Optional[str] = None
+    port_start: Optional[int] = None
+    port_end: Optional[int] = None
+    port_block_size: Optional[int] = None
+    protocol: Optional[str] = None
+    event_time: Optional[datetime] = None
+    released_at: Optional[datetime] = None
+    subscriber_id: Optional[str] = None
+    block_id: Optional[int] = None
+    message: Optional[str] = None
+
+
+class CGNATBulkCreate(BaseModel):
+    records: List[CGNATPortBlockCreate]
