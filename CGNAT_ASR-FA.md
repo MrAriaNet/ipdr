@@ -1,169 +1,112 @@
-# تخصیص بلوک پورت CGNAT (PBA) — Cisco ASR و IPDR
+# تخصیص بلوک پورت CGNAT (PBA) — Cisco ASR 1001-X و IPDR
 
 > **English:** [CGNAT_ASR.md](CGNAT_ASR.md)
 
-## چرا PBA؟
+## مشکل عملیاتی (چرا با PBA دیگر NetFlow «کشیده نمی‌شود»)
 
-روی پلتفرم‌هایی مثل **Cisco ASR 1001-X**، NAT سطح اپراتور (CGNAT) می‌تواند به‌صورت **Port Block Allocation (PBA)** کار کند:
+روی **Cisco ASR 1001-X** (و سری ASR 1000 در حالت CGN):
 
-- به‌جای لاگ هر translation جداگانه، به هر مشترک یک **بلوک پیوسته** از پورت‌های عمومی (مثلاً ۵۱۲ یا ۱۰۲۴ تایی) داده می‌شود.
-- حجم High-Speed Logging (HSL) / IPFIX به‌شدت کم می‌شود.
-- امنیت شبکه همچنان به IPDR نیاز دارد: نگاشت `public_ip:public_port` ← **IP داخلی مشترک** در زمان حادثه.
+| حالت | فشار روی دستگاه | لاگ |
+|------|------------------|-----|
+| **NAT Overload** (XLATE به‌ازای هر session) | زیاد — ناپایدار در مقیاس بالا | لاگ سنگین به‌ازای هر translation |
+| **CGNAT PBA / Bulk Logging** | پایدار — مناسب CGN | **فقط** allocate / deallocate **مجموعه پورت** از طریق **HSL** NetFlow v9 |
 
-این سیستم رویدادهای allocate/deallocate را ذخیره می‌کند و API جستجو برای همان نگاشت را در اختیار می‌گذارد.
+با روشن بودن PBA، سیسکو **هر session را لاگ نمی‌کند** و برای BPA **Syslog پشتیبانی نمی‌شود**. مقصد (destination) هم لاگ نمی‌شود. پس انتظار «NetFlow تک‌تک کانکشن از خود CGN» اشتباه است.
 
-## PBA در برابر NAT Overload (بدون جدول کانکشن)
+**مسیر درست IPDR با PBA:**
 
-| | **NAT Overload / PAT** | **CGNAT PBA** |
-|--|------------------------|---------------|
-| جدول | به‌ازای هر session یک ردیف XLATE / translation | **ندارد** — فقط اختصاص/آزادسازی بلوک پورت |
-| لاگ | create/delete هر کانکشن | `allocate` / `deallocate` بلوک (مثلاً ۱۰۲۴ پورت) |
-| جستجوی امنیت | معمولاً `public_ip + public_port` (+ گاهی پروتکل) روی جدول translation | همان ورودی‌ها، ولی روی **بازهٔ پورت** مشترک |
-| فیلدهای لازم در IPDR | لزوماً داخل‌پورت / ۵تایی لازم نیست برای پاسخ امنیتی؛ در PBA اصلاً ذخیره نمی‌شود | فقط `inside_ip`، `outside_ip`، `port_start`–`port_end`، زمان |
+1. **هویت (چه کسی public IP:port را داشته)** ← HSL رویدادهای PBA از ASR → همین سیستم (`cgnat_port_blocks`)
+2. **جزئیات ترافیک (اختیاری)** ← Flexible NetFlow / sFlow روی اینترفیس **داخل** (pre-NAT) یا نقطهٔ دیگر — همبستگی با `POST /api/lea/investigate`
 
-**نتیجه برای امنیت شبکه:** در حالت PBA نیازی به جدول کانکشن مثل overload نیست. کافی است رویدادهای بلوک را نگه دارید؛ هر `public_port` داخل بازه به همان `inside_ip` نگاشت می‌شود.
+این IPDR دقیقاً برای همین مدل است: نگاشت کامل و دقیق مشترک از لاگ PBA، بدون جدول کانکشن.
 
-## مدل داده (چه چیزی ذخیره می‌شود)
+## چه چیزی از ASR می‌آید (فیلدهای HSL)
 
-| فیلد | معنی |
-|------|------|
-| `inside_ip` | آدرس مشترک / pre-NAT |
-| `outside_ip` | آدرس عمومی / post-NAT |
-| `port_start` / `port_end` | بلوک پیوسته پورت عمومی |
-| `port_block_size` | معمولاً `end - start + 1` (۵۱۲، ۱۰۲۴، …) |
-| `event_type` | `allocate` / `deallocate` |
-| `event_time` / `released_at` | زمان اختصاص / آزادسازی |
-| `is_active` | آیا بلوک هنوز در اختیار مشترک است |
+```cisco
+ip nat log translations flow-export v9 udp destination 192.168.1.100 2055
+```
 
-## مسیرهای ورود داده
+| IE | معنی |
+|----|------|
+| 8 | IP داخلی مشترک |
+| 225 | IP عمومی (post-NAT) |
+| 230 | رویداد: `1`=allocate ، `2`=deallocate |
+| 323 | زمان (میلی‌ثانیه) |
+| 361 | شروع بلوک پورت |
+| 363 | **step** (پورت‌های پراکنده، مثلاً ۸) |
+| 364 | تعداد پورت در بلوک (مثلاً ۵۱۲) |
 
-### ۱) IPFIX / NetFlow از ASR (پیشنهادی)
+پورت‌های مجموعه: `start`, `start+step`, …  
+IPDR فیلد `port_step` را نگه می‌دارد و فقط پورت‌هایی که واقعاً در مجموعه هستند را به مشترک نسبت می‌دهد.
 
-کالکتور NetFlow/IPFIX را روی UDP **2055** روشن کنید. قالب‌هایی که IEهای NAT / port-range دارند به‌عنوان CGNAT PBA شناخته و در `cgnat_port_blocks` ذخیره می‌شوند (نه به‌عنوان flow عادی).
+---
+
+## پیکربندی ASR 1001-X (PBA + HSL)
+
+پیش‌نیاز: حالت **CGN** + **paired-address pooling**.
+
+```cisco
+configure terminal
+!
+interface GigabitEthernet0/0/0
+ description INSIDE
+ ip nat inside
+!
+interface GigabitEthernet0/0/1
+ description OUTSIDE
+ ip nat outside
+!
+ip nat settings mode cgn
+!
+ip nat pool CGN_POOL 203.0.113.10 203.0.113.20 prefix-length 24
+access-list 1 permit 100.64.0.0 0.63.255.255
+ip nat inside source list 1 pool CGN_POOL
+!
+! Bulk Port Allocation
+ip nat settings pap bpa set-size 512 step-size 8
+!
+! === خوراک IPDR (نه NetFlow اینترفیس) ===
+ip nat log translations flow-export v9 udp destination 192.168.1.100 2055
+!
+end
+```
+
+بررسی روی ASR:
+
+```cisco
+show ip nat bpa
+show ip nat translations
+show ip nat statistics
+```
+
+روی سرور IPDR:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/collector/start" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me-admin" \
   -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
+
+sudo tcpdump -ni any udp port 2055 -c 20
+
+curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=4008&at=2026-11-06T12:30:00Z" \
+  -H "X-API-Key: change-me-lea"
 ```
 
-IEهای شناخته‌شده (از جمله):
-
-- `225` postNATSourceIPv4Address  
-- `230` natEvent  
-- `361`–`364` portRangeStart / End / Step / NumPorts  
-- منبع pre-NAT از IE `8` / IPv6 `27`
-
-### ۲) REST API (پل HSL / اسکریپت)
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/cgnat/blocks" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event_time": "2026-11-06T12:00:00",
-    "event_type": "allocate",
-    "inside_ip": "100.64.10.25",
-    "outside_ip": "203.0.113.10",
-    "port_start": 1024,
-    "port_end": 2047,
-    "port_block_size": 1024,
-    "protocol": "ANY",
-    "router_ip": "192.0.2.1",
-    "source": "api"
-  }'
-```
-
-دسته‌ای: `POST /api/cgnat/blocks/bulk` با `{ "records": [ ... ] }`.
-
-## جستجوی امنیت (LEA / SOC)
-
-ورودی فقط: IP عمومی + پورت عمومی (+ زمان حادثه). **بدون** inside_port و بدون جدول کانکشن.
-
-```bash
-curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
-```
-
-نمونه پاسخ:
-
-```json
-{
-  "found": true,
-  "public_ip": "203.0.113.10",
-  "public_port": 1500,
-  "inside_ip": "100.64.10.25",
-  "port_start": 1024,
-  "port_end": 2047,
-  "port_block_size": 1024,
-  "event_time": "2026-11-06T12:00:00",
-  "message": "OK — mapped via port-block allocation (no NAT connection/XLATE entry required)"
-}
-```
-
-جستجوی معکوس (IP مشترک ← بلوک‌های عمومی در آن زمان):
-
-```bash
-curl -s "http://127.0.0.1:8000/api/cgnat/lookup/by-subscriber?inside_ip=100.64.10.25&at=2026-11-06T12:30:00"
-```
-
-لیست بلوک‌ها: `GET /api/cgnat/blocks?outside_ip=203.0.113.10&is_active=true`
+برای حجم ترافیک می‌توانید جداگانه NetFlow روی اینترفیس **inside** بفرستید؛ هویت مشترک همچنان از HSL PBA است.
 
 ---
 
-## Cisco ASR 1001-X — اسکلت پیکربندی
+## جستجوی امنیت / نهاد
 
-دستور دقیق بسته به نسخه IOS-XE / قابلیت CGN فرق می‌کند. بلوک‌های رایج:
+ورودی: **IP عمومی + پورت عمومی + زمان** (بدون inside_port و بدون جدول کانکشن).
 
-### فعال‌سازی CGN با PBA
+بسته کامل: `POST /api/lea/investigate` — راهنما: [LEA-FA.md](LEA-FA.md)
 
-```cisco
-! مفاهیم نمونه — با راهنمای IOS-XE / CGN خودتان تطبیق دهید
-ip nat settings mode cgn
-ip nat settings port-block-allocation size 1024
-! یا وابسته به پلتفرم:
-! ip nat translation port-block-allocation enable
-! ip nat translation port-block size 1024
-```
+اگر `ambiguous: true` باشد پاسخ را قطعی ندانید.
 
-بررسی:
+نمونه تست: `python examples/cgnat_pba_sample.py`
 
-```cisco
-show ip nat translations
-show ip nat port-block
-show platform hardware qfp active feature nat datapath …
-```
+**واسط پایدار لاگ (صف + اسپیل دیسک + bridge جدا):** [HSL_BRIDGE-FA.md](HSL_BRIDGE-FA.md)
 
-### خروجی لاگ NAT / PBA با IPFIX (HSL → collector)
-
-Exporter را به سرور IPDR بفرستید (`192.168.1.100:2055`):
-
-```cisco
-flow exporter IPDR_CGN
- destination 192.168.1.100
- transport udp 2055
- export-protocol ipfix
- source Loopback0
-!
-! اتصال exporter به لاگ CGN/NAT طبق نسخه IOS-XE شما
-```
-
-روی سرور IPDR پورت **UDP 2055** را از سمت ASR باز کنید.
-
-> همیشه با `tcpdump -ni any udp port 2055` قالب‌ها را ببینید و در لاگ IPDR پیام‌های `CGNAT PBA allocate/deallocate` را چک کنید.
-
-### نکات عملی برای امنیت
-
-1. لاگ PBA را حداقل به‌اندازه سیاست نگهداری قانونی IPDR نگه دارید.  
-2. در lookup از **زمان حادثه** استفاده کنید، نه «الان»، اگر بلوک ممکن است آزاد شده باشد.  
-3. اندازه بلوک (۵۱۲/۱۰۲۴/…) باید با تنظیم ASR یکی باشد.  
-4. ASR و IPDR را روی **NTP** نگه دارید.
-
----
-
-## اسکریپت نمونه
-
-```bash
-python examples/cgnat_pba_sample.py
-```
-
-نصب فارسی: [INSTALL-FA.md](INSTALL-FA.md)  
-اتصال روتر: [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md)
+نصب: [INSTALL-FA.md](INSTALL-FA.md) · انگلیسی: [CGNAT_ASR.md](CGNAT_ASR.md)

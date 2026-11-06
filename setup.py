@@ -51,6 +51,7 @@ def upgrade_schema():
         "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN DEFAULT FALSE",
         "ALTER TABLE ipdr_records ADD COLUMN IF NOT EXISTS hold_case_id VARCHAR(100)",
         "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS mapping_mode VARCHAR(20) DEFAULT 'pba'",
+        "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS port_step INTEGER DEFAULT 1",
         "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
         "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS legal_hold BOOLEAN DEFAULT FALSE",
         "ALTER TABLE cgnat_port_blocks ADD COLUMN IF NOT EXISTS hold_case_id VARCHAR(100)",

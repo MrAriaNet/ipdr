@@ -1,9 +1,22 @@
 """
-IPFIX / NetFlow information elements used for CGNAT / NAT logging and PBA.
+IPFIX / NetFlow v9 IEs for CGNAT / Cisco ASR Bulk Logging (PBA).
 
-References:
-  - IANA IPFIX (natEvent, postNAT*, portRange*)
-  - Cisco ASR CGN Port Block Allocation (PBA) high-speed logging via IPFIX
+Cisco ASR 1000 with Port Block Allocation does NOT export per-session NetFlow
+of NAT translations. Instead High-Speed Logging (HSL) sends NetFlow v9 records
+only when a port *set* is allocated or freed:
+
+  ip nat log translations flow-export v9 udp destination <ipdr> 2055
+
+Documented HSL fields (IOS-XE Bulk Logging and Port Block Allocation):
+  8   sourceIPv4Address          (inside / pre-NAT)
+  225 postNATSourceIPv4Address   (outside / public)
+  234 ingressVRFID
+  4   protocolIdentifier
+  230 natEvent                   (1=add/allocate, 2=delete/deallocate)
+  323 observationTimeMilliseconds
+  361 portRangeStart
+  363 portRangeStepSize          (scattered port set)
+  364 portRangeNumPorts
 """
 from __future__ import annotations
 
@@ -37,30 +50,59 @@ IE_EGRESS_VRF_ID = 235
 IE_POST_NAT_SRC_IPV6 = 281
 IE_POST_NAT_DST_IPV6 = 282
 IE_NAT_POOL_ID = 283
+# Cisco ASR BPA HSL timestamp (observationTimeMilliseconds)
+IE_OBSERVATION_TIME_MS = 323
 IE_PORT_RANGE_START = 361
 IE_PORT_RANGE_END = 362
 IE_PORT_RANGE_STEP = 363
 IE_PORT_RANGE_NUM_PORTS = 364
 
-# natEvent values commonly seen (RFC 8158 + vendor practice)
+# natEvent: Cisco BPA uses 1=Add (allocate), 2=Delete (deallocate)
 NAT_EVENT_MAP = {
-    1: "create",
-    2: "delete",
+    0: "unknown",
+    1: "allocate",
+    2: "deallocate",
     3: "pool_exhausted",
     4: "quota_exceeded",
-    5: "create",
-    6: "delete",
-    # Vendor / CGN PBA-oriented aliases treated in normalize_event_type
+    5: "allocate",
+    6: "deallocate",
 }
+
+
+def port_in_pba_set(
+    port: int,
+    port_start: int,
+    port_end: int,
+    port_step: int = 1,
+    port_block_size: Optional[int] = None,
+) -> bool:
+    """
+    True if public_port belongs to a Cisco BPA port set.
+
+    Scattered set: start, start+step, start+2*step, ... (count = block_size).
+    Contiguous (step<=1): any port in [start, end].
+    """
+    port = int(port)
+    start = int(port_start)
+    end = int(port_end)
+    step = max(int(port_step or 1), 1)
+    if port < start or port > end:
+        return False
+    if step <= 1:
+        return True
+    if (port - start) % step != 0:
+        return False
+    idx = (port - start) // step
+    if port_block_size is not None:
+        return 0 <= idx < int(port_block_size)
+    return True
 
 
 def is_cgnat_pba_record(values: Dict[int, Any]) -> bool:
     """
-    True when the template row looks like NAT/PBA rather than a normal flow.
+    True when the template row looks like NAT/PBA HSL rather than a normal flow.
 
-    True PBA (preferred): port-range IEs (361–364) — no per-connection table.
-    Fallback: natEvent + postNAT (classic create/delete); stored as a 1-port
-    "block" so overload-style HSL can still be queried the same way.
+    Cisco BPA HSL: port-range start (361) + num ports (364) + postNAT / src.
     """
     has_port_block = (
         IE_PORT_RANGE_START in values
@@ -73,24 +115,26 @@ def is_cgnat_pba_record(values: Dict[int, Any]) -> bool:
         or IE_POST_NAPT_SRC_PORT in values
     )
     has_nat_event = IE_NAT_EVENT in values
-    # Port-block templates alone are enough (ASR PBA often has no XLATE fields)
     if has_port_block and (has_post_nat or IE_IPV4_SRC_ADDR in values or IE_IPV6_SRC_ADDR in values):
         return True
+    # Classic per-translation HSL (overload) — rare with BPA enabled
     return bool(has_nat_event and has_post_nat)
 
 
 def normalize_event_type(nat_event: Optional[int], explicit: Optional[str] = None) -> str:
     if explicit:
         e = explicit.lower().strip()
-        if e in ("allocate", "allocation", "pba_alloc", "port_block_alloc"):
+        if e in ("allocate", "allocation", "pba_alloc", "port_block_alloc", "add", "create"):
             return "allocate"
-        if e in ("deallocate", "deallocation", "pba_dealloc", "port_block_dealloc", "release"):
+        if e in ("deallocate", "deallocation", "pba_dealloc", "port_block_dealloc", "release", "delete"):
             return "deallocate"
-        if e in ("create", "delete", "unknown"):
+        if e in ("unknown",):
             return e
     if nat_event is None:
         return "allocate"
     mapped = NAT_EVENT_MAP.get(int(nat_event))
+    if mapped in ("allocate", "deallocate"):
+        return mapped
     if mapped == "create":
         return "allocate"
     if mapped == "delete":
@@ -113,11 +157,10 @@ def values_to_cgnat_dict(
     is_ipfix: bool,
 ) -> Optional[Dict[str, Any]]:
     """
-    Build a CGNAT PBA dict suitable for CGNATPortBlockCreate / service.
+    Build a CGNAT PBA dict from Cisco ASR HSL / IPFIX template values.
 
-    Only block-level fields are required (inside_ip, outside_ip, port range).
-    Inside port / destination / 5-tuple are intentionally ignored — PBA has
-    no connection table like NAT overload.
+    Destination / inside_port / 5-tuple are intentionally ignored — BPA HSL
+    does not log destinations (Cisco restriction).
     """
     if not is_cgnat_pba_record(values):
         return None
@@ -132,43 +175,42 @@ def values_to_cgnat_dict(
     port_start = values.get(IE_PORT_RANGE_START)
     port_end = values.get(IE_PORT_RANGE_END)
     num_ports = values.get(IE_PORT_RANGE_NUM_PORTS)
-    step = values.get(IE_PORT_RANGE_STEP)
-
-    # Derive end from start + num_ports when ASR omits portRangeEnd
-    if port_start is not None and port_end is None and num_ports is not None:
-        try:
-            port_end = int(port_start) + int(num_ports) - 1
-        except (TypeError, ValueError):
-            port_end = None
+    try:
+        step = int(values.get(IE_PORT_RANGE_STEP) or 1)
+    except (TypeError, ValueError):
+        step = 1
+    if step < 1:
+        step = 1
 
     # Fallback: single post-NAPT source port as a 1-port "block" (overload HSL)
     if port_start is None and IE_POST_NAPT_SRC_PORT in values:
         port_start = values.get(IE_POST_NAPT_SRC_PORT)
         port_end = port_start
         num_ports = 1
+        step = 1
 
     if port_start is None:
         return None
     port_start = int(port_start)
-    if port_end is not None:
+
+    if num_ports is not None:
+        num_ports = int(num_ports)
+        # Cisco scattered: last port = start + (n-1)*step
+        port_end = port_start + (num_ports - 1) * step
+    elif port_end is not None:
         port_end = int(port_end)
-    elif num_ports is not None:
-        # Optional non-contiguous step (rare); default contiguous block
-        try:
-            st = int(step) if step not in (None, 0, 1) else 1
-        except (TypeError, ValueError):
-            st = 1
-        if st <= 1:
-            port_end = port_start + int(num_ports) - 1
+        if step <= 1:
+            num_ports = port_end - port_start + 1
         else:
-            # Contiguous storage: cover the span of stepped ports
-            port_end = port_start + (int(num_ports) - 1) * st
+            num_ports = ((port_end - port_start) // step) + 1
     else:
         port_end = port_start
+        num_ports = 1
+
     if port_end < port_start:
         port_start, port_end = port_end, port_start
 
-    block_size = int(num_ports) if num_ports is not None else (port_end - port_start + 1)
+    block_size = int(num_ports)
 
     nat_event = values.get(IE_NAT_EVENT)
     try:
@@ -178,13 +220,21 @@ def values_to_cgnat_dict(
 
     event_type = normalize_event_type(nat_event_i)
 
-    event_time = datetime.utcnow()
-    if IE_FLOW_START_MS in values:
+    # Prefer Cisco observationTimeMilliseconds (323)
+    event_time = None
+    if IE_OBSERVATION_TIME_MS in values:
+        try:
+            event_time = unix_ts(int(values[IE_OBSERVATION_TIME_MS]) / 1000.0)
+        except (TypeError, ValueError):
+            event_time = None
+    if event_time is None and IE_FLOW_START_MS in values:
         event_time = unix_ts(int(values[IE_FLOW_START_MS]) / 1000.0)
-    elif IE_FLOW_START_SEC in values:
+    elif event_time is None and IE_FLOW_START_SEC in values:
         event_time = unix_ts(int(values[IE_FLOW_START_SEC]))
-    elif unix_secs:
+    elif event_time is None and unix_secs:
         event_time = unix_ts(unix_secs)
+    if event_time is None:
+        event_time = datetime.now(tz=__import__("datetime").timezone.utc)
 
     released_at = None
     if event_type == "deallocate":
@@ -226,6 +276,7 @@ def values_to_cgnat_dict(
         "port_start": port_start,
         "port_end": port_end,
         "port_block_size": block_size,
+        "port_step": step,
         "protocol": protocol_name(proto_num) if proto_num is not None else "ANY",
         "protocol_number": proto_num,
         "ip_version": ip_version,
@@ -235,12 +286,13 @@ def values_to_cgnat_dict(
         "released_at": released_at,
         "is_active": event_type not in ("deallocate", "delete"),
         "router_ip": normalize_ip(router_ip, default=router_ip),
-        "source": "ipfix" if is_ipfix else "netflow_v9",
+        "source": "asr_hsl_v9" if not is_ipfix else "ipfix",
         "raw_nat_event": nat_event_i,
         "mapping_mode": mapping_mode,
         "additional_info": {
-            "port_range_step": values.get(IE_PORT_RANGE_STEP),
+            "port_range_step": step,
             "nat_pool_id": values.get(IE_NAT_POOL_ID),
-            "post_napt_src_port": values.get(IE_POST_NAPT_SRC_PORT),
+            "cisco_bpa": True,
+            "note": "PBA HSL: allocate/deallocate port set only; no per-session NetFlow",
         },
     }

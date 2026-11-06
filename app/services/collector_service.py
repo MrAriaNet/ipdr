@@ -1,14 +1,12 @@
 """
-Service for managing network traffic collectors
+Service for managing network traffic collectors with durable ingest.
 """
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from app.collectors.netflow_collector import NetFlowCollector, SimpleFlowCollector
 from app.collectors.sflow_collector import SFlowCollector
 from app.schemas import IPDRRecordCreate
-from app.services.ipdr_service import IPDRService
-from app.services.cgnat_service import CGNATService
-from app.database import SessionLocal
+from app.services.durable_ingest import durable_ingest
 from app.utils.logger import logger
 
 
@@ -19,31 +17,23 @@ class CollectorService:
         self.netflow_collector: Optional[NetFlowCollector] = None
         self.sflow_collector: Optional[SFlowCollector] = None
         self.simple_collector: Optional[SimpleFlowCollector] = None
+        durable_ingest.start()
 
     def _make_flow_callback(self):
         def process_flow(record: IPDRRecordCreate):
             try:
-                db = SessionLocal()
-                try:
-                    IPDRService.create_record(db, record)
-                    logger.debug(f"Flow record saved: {record.source_ip} -> {record.destination_ip}")
-                finally:
-                    db.close()
+                durable_ingest.enqueue_flow(record)
             except Exception as e:
-                logger.error(f"Error saving flow record: {e}", exc_info=True)
+                logger.error(f"Error enqueueing flow record: {e}", exc_info=True)
 
         return process_flow
 
     def _make_cgnat_callback(self):
         def process_cgnat(payload: dict):
             try:
-                db = SessionLocal()
-                try:
-                    CGNATService.create_from_dict(db, payload)
-                finally:
-                    db.close()
+                durable_ingest.enqueue_cgnat(payload)
             except Exception as e:
-                logger.error(f"Error saving CGNAT PBA record: {e}", exc_info=True)
+                logger.error(f"Error enqueueing CGNAT PBA record: {e}", exc_info=True)
 
         return process_cgnat
 
@@ -51,6 +41,7 @@ class CollectorService:
         if self.netflow_collector and self.netflow_collector.running:
             logger.warning("NetFlow collector is already running")
             return
+        durable_ingest.start()
         self.netflow_collector = NetFlowCollector(
             host=host,
             port=port,
@@ -58,7 +49,7 @@ class CollectorService:
             cgnat_callback=self._make_cgnat_callback(),
         )
         self.netflow_collector.start()
-        logger.info(f"NetFlow/IPFIX (+CGNAT PBA) collector started on {host}:{port}")
+        logger.info(f"NetFlow/IPFIX (+CGNAT PBA HSL) collector started on {host}:{port}")
 
     def stop_netflow_collector(self):
         if self.netflow_collector:
@@ -74,6 +65,7 @@ class CollectorService:
         if self.sflow_collector and self.sflow_collector.running:
             logger.warning("sFlow collector is already running")
             return
+        durable_ingest.start()
         self.sflow_collector = SFlowCollector(
             host=host,
             port=port,
@@ -92,7 +84,10 @@ class CollectorService:
         if self.simple_collector and self.simple_collector.running:
             logger.warning("Simple collector is already running")
             return
-        self.simple_collector = SimpleFlowCollector(host=host, port=port, callback=self._make_flow_callback())
+        durable_ingest.start()
+        self.simple_collector = SimpleFlowCollector(
+            host=host, port=port, callback=self._make_flow_callback()
+        )
         self.simple_collector.start()
         logger.info(f"Simple flow collector started on {host}:{port}")
 
@@ -105,6 +100,19 @@ class CollectorService:
         self.stop_netflow_collector()
         self.stop_sflow_collector()
         self.stop_simple_collector()
+
+    def ingest_status(self) -> Dict[str, Any]:
+        nf = self.netflow_collector
+        return {
+            "durable_ingest": durable_ingest.snapshot(),
+            "netflow": nf.get_stats() if nf else {"running": False},
+            "sflow": {
+                "running": bool(self.sflow_collector and self.sflow_collector.running),
+            },
+            "simple": {
+                "running": bool(self.simple_collector and self.simple_collector.running),
+            },
+        }
 
 
 collector_service = CollectorService()

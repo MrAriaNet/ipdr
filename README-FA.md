@@ -20,6 +20,7 @@
 - داشبورد HTML و مستندات OpenAPI (`/docs`)
 - **CGNAT Port Block Allocation (PBA)** برای Cisco ASR (مثل 1001-X): ذخیره allocate/deallocate و جستجوی `public_ip:port` ← IP مشترک (بدون جدول کانکشن/XLATE)
 - **گردش کار نهاد / امنیت**: AAA، investigate، export با هش، audit پرس‌وجو، legal hold، retention — [LEA-FA.md](LEA-FA.md)
+- **واسط پایدار HSL برای PBA**: صف + اسپیل دیسک + کش قالب تا لاگ ASR از دست نرود — [HSL_BRIDGE-FA.md](HSL_BRIDGE-FA.md)
 
 ## پیش‌نیازها
 

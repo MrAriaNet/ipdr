@@ -1,0 +1,20 @@
+[Unit]
+Description=IPDR CGNAT HSL / NetFlow bridge (Cisco ASR PBA)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=ipdr
+Group=ipdr
+WorkingDirectory=/opt/ipdr
+EnvironmentFile=/opt/ipdr/.env
+Environment=HSL_LISTEN_HOST=0.0.0.0
+Environment=HSL_LISTEN_PORT=2055
+ExecStart=/opt/ipdr/venv/bin/python -m app.bridges.cgnat_hsl_bridge
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -10,7 +10,8 @@ import time
 from dotenv import load_dotenv
 
 from app.database import engine, Base
-from app.routers import ipdr, security, collector, cgnat, lea
+from app.routers import ipdr, security, collector, cgnat, lea, ingest
+from app.services.durable_ingest import durable_ingest
 from app.utils.logger import logger
 from app.utils.timeutil import utcnow
 
@@ -18,6 +19,9 @@ load_dotenv()
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+# Durable queue for NetFlow/HSL → DB (spill to disk on outage)
+durable_ingest.start()
 
 logger.info("IPDR System starting up...")
 
@@ -54,6 +58,7 @@ app.include_router(security.router)
 app.include_router(collector.router)
 app.include_router(cgnat.router)
 app.include_router(lea.router)
+app.include_router(ingest.router)
 
 # Request logging middleware
 @app.middleware("http")

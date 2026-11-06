@@ -119,9 +119,11 @@ class CGNATPortBlock(Base):
     CGNAT Port Block Allocation (PBA) records — e.g. Cisco ASR 1001-X.
 
     Unlike NAT overload / PAT, PBA does NOT keep a per-connection (XLATE) table
-    for logging. The CGN only allocates / deallocates a contiguous public port
-    block to a subscriber. Security maps public_ip:public_port → inside_ip
-    using these block rows only (no inside_port / 5-tuple required).
+    for logging. With Cisco Bulk Logging / PBA, HSL exports port-set
+    allocate/deallocate (NetFlow v9), not per-session NetFlow.
+
+    Cisco ASR uses scattered port sets: start + step + num_ports (IEs 361/363/364).
+    Lookup must honour port_step (not a simple contiguous range when step > 1).
     """
     __tablename__ = "cgnat_port_blocks"
 
@@ -137,6 +139,8 @@ class CGNATPortBlock(Base):
     port_start = Column(Integer, nullable=False, index=True)
     port_end = Column(Integer, nullable=False, index=True)
     port_block_size = Column(Integer, nullable=True)
+    # Cisco BPA scattered set: ports = start, start+step, ... (count = port_block_size)
+    port_step = Column(Integer, default=1)
 
     protocol = Column(String(32), index=True)  # TCP / UDP / ANY
     protocol_number = Column(Integer, index=True)

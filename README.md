@@ -19,6 +19,7 @@ Collect, store, search, and analyze network traffic sessions. Built for Linux se
 - HTML dashboard and OpenAPI docs (`/docs`)
 - **CGNAT Port Block Allocation (PBA)** for Cisco ASR (e.g. 1001-X): store allocate/deallocate blocks and look up `public_ip:port` → subscriber IP for network security (no XLATE/connection table)
 - **LEA / security workflow**: AAA binding, investigate bundle, warrant export + SHA-256, query audit, legal hold, retention — see [LEA.md](LEA.md)
+- **Durable CGNAT HSL bridge**: queue + disk spool + template cache so ASR PBA logs are not lost — see [HSL_BRIDGE.md](HSL_BRIDGE.md)
 ## Requirements
 
 | Component | Version |

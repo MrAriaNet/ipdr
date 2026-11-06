@@ -16,6 +16,7 @@ from typing import List, Optional
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.collectors.cgnat_fields import port_in_pba_set
 from app.collectors.common import normalize_ip
 from app.models import CGNATEventType, CGNATPortBlock
 from app.schemas import (
@@ -37,16 +38,25 @@ class CGNATService:
     @staticmethod
     def create_block(db: Session, data: CGNATPortBlockCreate) -> CGNATPortBlock:
         """
-        Ingest one PBA lifecycle event. No connection/session fields are required
-        or stored — only inside_ip, outside_ip, and the public port range.
+        Ingest one PBA lifecycle event (Cisco ASR HSL allocate/deallocate).
+        No connection/session fields — only inside_ip, outside_ip, port set + step.
         """
         inside = normalize_ip(data.inside_ip)
         outside = normalize_ip(data.outside_ip)
         port_start = int(data.port_start)
         port_end = int(data.port_end)
+        port_step = max(int(data.port_step or 1), 1)
         if port_end < port_start:
             port_start, port_end = port_end, port_start
-        block_size = data.port_block_size or (port_end - port_start + 1)
+        if data.port_block_size:
+            block_size = int(data.port_block_size)
+            # Prefer Cisco formula for end when step known
+            if port_step > 1:
+                port_end = port_start + (block_size - 1) * port_step
+        elif port_step > 1:
+            block_size = ((port_end - port_start) // port_step) + 1
+        else:
+            block_size = port_end - port_start + 1
 
         event_type = data.event_type
         is_active = True if data.is_active is None else bool(data.is_active)
@@ -79,6 +89,8 @@ class CGNATService:
                 "outside_ip": outside,
                 "port_start": port_start,
                 "port_end": port_end,
+                "port_step": port_step,
+                "port_block_size": block_size,
                 "mapping_mode": mapping_mode,
             }
         )
@@ -91,6 +103,7 @@ class CGNATService:
             port_start=port_start,
             port_end=port_end,
             port_block_size=block_size,
+            port_step=port_step,
             protocol=data.protocol or "ANY",
             protocol_number=data.protocol_number,
             ip_version=data.ip_version or (6 if ":" in inside else 4),
@@ -111,19 +124,27 @@ class CGNATService:
         db.refresh(row)
         logger.info(
             f"CGNAT PBA {event_type.value}: {inside} -> {outside}:{port_start}-{port_end} "
-            f"(size={block_size}, mode={mapping_mode})"
+            f"(size={block_size}, step={port_step}, mode={mapping_mode})"
         )
         return row
 
     @staticmethod
     def create_from_dict(db: Session, payload: dict) -> CGNATPortBlock:
+        payload = dict(payload)
         et = payload.get("event_type", "allocate")
         if isinstance(et, str):
             try:
                 et = CGNATEventType(et.lower())
             except ValueError:
                 et = CGNATEventType.UNKNOWN
-        payload = {**payload, "event_type": et}
+        payload["event_type"] = et
+        # Spool replay may store ISO strings
+        for key in ("event_time", "released_at"):
+            val = payload.get(key)
+            if isinstance(val, str):
+                payload[key] = ensure_utc(
+                    datetime.fromisoformat(val.replace("Z", "+00:00"))
+                )
         return CGNATService.create_block(db, CGNATPortBlockCreate(**payload))
 
     @staticmethod
@@ -198,12 +219,23 @@ class CGNATService:
             port_start=row.port_start,
             port_end=row.port_end,
             port_block_size=row.port_block_size,
+            port_step=getattr(row, "port_step", None) or 1,
             protocol=row.protocol,
             event_time=row.event_time,
             released_at=row.released_at,
             subscriber_id=row.subscriber_id,
             block_id=row.id,
             mapping_mode=getattr(row, "mapping_mode", None) or "pba",
+        )
+
+    @staticmethod
+    def _row_owns_port(row: CGNATPortBlock, port: int) -> bool:
+        return port_in_pba_set(
+            port,
+            row.port_start,
+            row.port_end,
+            getattr(row, "port_step", None) or 1,
+            row.port_block_size,
         )
 
     @staticmethod
@@ -224,7 +256,8 @@ class CGNATService:
         outside = normalize_ip(public_ip)
         port = int(public_port)
 
-        rows = (
+        # Wide span filter in SQL, then honour Cisco scattered step in Python
+        candidates = (
             db.query(CGNATPortBlock)
             .filter(
                 CGNATPortBlock.outside_ip == outside,
@@ -238,9 +271,10 @@ class CGNATService:
                 ),
             )
             .order_by(CGNATPortBlock.event_time.desc())
-            .limit(50)
+            .limit(100)
             .all()
         )
+        rows = [r for r in candidates if CGNATService._row_owns_port(r, port)]
 
         if not rows:
             candidates = (
@@ -253,10 +287,14 @@ class CGNATService:
                     CGNATPortBlock.event_time <= at,
                 )
                 .order_by(CGNATPortBlock.event_time.desc())
-                .limit(50)
+                .limit(100)
                 .all()
             )
-            rows = [c for c in candidates if CGNATService._block_valid_at(c, at)]
+            rows = [
+                c
+                for c in candidates
+                if CGNATService._block_valid_at(c, at) and CGNATService._row_owns_port(c, port)
+            ]
 
         matches = [CGNATService._row_to_match(r) for r in rows]
         # Deduplicate identical blocks (same inside + range) keeping newest
@@ -309,6 +347,7 @@ class CGNATService:
             port_start=primary.port_start,
             port_end=primary.port_end,
             port_block_size=primary.port_block_size,
+            port_step=primary.port_step,
             protocol=primary.protocol,
             event_time=primary.event_time,
             released_at=primary.released_at,
@@ -353,6 +392,7 @@ class CGNATService:
                 port_start=r.port_start,
                 port_end=r.port_end,
                 port_block_size=r.port_block_size,
+                port_step=getattr(r, "port_step", None) or 1,
                 protocol=r.protocol,
                 event_time=r.event_time,
                 released_at=r.released_at,

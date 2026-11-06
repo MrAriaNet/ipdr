@@ -1,171 +1,172 @@
-# CGNAT Port Block Allocation (PBA) — Cisco ASR & IPDR
+# CGNAT Port Block Allocation (PBA) — Cisco ASR 1001-X & IPDR
 
 > **فارسی:** [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)
 
-## Why PBA?
+## The operational problem (why NetFlow “stops” with PBA)
 
-On platforms such as **Cisco ASR 1001-X**, Carrier-Grade NAT can use **Port Block Allocation (PBA)**:
+On **Cisco ASR 1001-X** (and ASR 1000 CGN):
 
-- Instead of logging every single NAT translation, the CGN assigns a **contiguous block** of public ports (e.g. 512 or 1024) to a subscriber.
-- High-speed logging (HSL) / IPFIX volume drops dramatically.
-- Network security still needs IPDR: map `public_ip:public_port` → **subscriber (inside) IP** at incident time.
+| Mode | Device load | Logging |
+|------|-------------|---------|
+| **NAT overload** (per-session XLATE) | High — device under pressure, often unstable at scale | Classic per-translation logs / heavy NetFlow-like HSL |
+| **CGNAT PBA / Bulk Logging** | Stable — recommended for CGN | **Only** port-set **allocate / deallocate** via NAT **High-Speed Logging (HSL)** NetFlow v9 |
 
-This IPDR system stores PBA allocate/deallocate events and exposes a **lookup API** for that mapping.
+With PBA enabled Cisco **does not** log every NAT session and **does not** support Syslog for BPA. Destination is not logged. So “pulling NetFlow” of every connection from the CGN box is the wrong expectation.
 
-## PBA vs NAT overload (no connection table)
+**Correct IPDR path with PBA:**
 
-| | **NAT overload / PAT** | **CGNAT PBA** |
-|--|------------------------|---------------|
-| Table | One XLATE / translation row per session | **None** — only port-block allocate/deallocate |
-| Logging | create/delete per connection | `allocate` / `deallocate` of a block (e.g. 1024 ports) |
-| Security query | `public_ip + public_port` on the translation table | Same inputs, matched against the **port range** |
-| What IPDR stores | Not required for PBA security answer | Only `inside_ip`, `outside_ip`, `port_start`–`port_end`, timestamps |
+1. **Identity (who used public IP:port)** ← ASR NAT HSL PBA records → this IPDR (`cgnat_port_blocks`)
+2. **Optional traffic detail** ← Flexible NetFlow / sFlow on **inside** (pre-NAT) or another tap — correlate with `POST /api/lea/investigate`
 
-**For network security:** in PBA mode you do **not** need a connection table like overload. Keep block events; any `public_port` inside the range maps to the same `inside_ip`.
+This system is built for that model: complete and accurate **subscriber mapping** from PBA HSL, without needing a connection table.
 
-## Data model (what we store)
+## What Cisco exports (HSL fields)
 
-| Field | Meaning |
-|-------|---------|
-| `inside_ip` | Subscriber / pre-NAT address |
-| `outside_ip` | Public / post-NAT address |
-| `port_start` / `port_end` | Contiguous public port block |
-| `port_block_size` | Usually `end - start + 1` (e.g. 512, 1024) |
-| `event_type` | `allocate` / `deallocate` |
-| `event_time` / `released_at` | When the block was given / returned |
-| `is_active` | Block still held by subscriber |
+Command (collector = IPDR server):
 
-## Ingest paths
-
-### 1) IPFIX / NetFlow from ASR (recommended)
-
-Start the NetFlow/IPFIX collector (same UDP **2055**). Templates that include NAT / port-range IEs are classified as CGNAT PBA and stored in `cgnat_port_blocks` (not as normal flow rows).
-
-```bash
-curl -X POST "http://127.0.0.1:8000/api/collector/start" \
-  -H "Content-Type: application/json" \
-  -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
+```cisco
+ip nat log translations flow-export v9 udp destination 192.168.1.100 2055
 ```
 
-Recognized IPFIX IEs (among others):
+| IE | Name | Meaning |
+|----|------|---------|
+| 8 | sourceIPv4Address | Inside / subscriber IP |
+| 225 | postNATSourceIPv4Address | Public / outside IP |
+| 234 | ingressVRFID | VRF |
+| 4 | protocolIdentifier | Protocol |
+| 230 | natEvent | `1` = allocate (add), `2` = deallocate (delete) |
+| 323 | observationTimeMilliseconds | Event time |
+| 361 | portRangeStart | First port in set |
+| 363 | portRangeStepSize | Scattered step (e.g. 4 or 8) |
+| 364 | portRangeNumPorts | Ports in set (e.g. 512, 1024) |
 
-- `225` postNATSourceIPv4Address  
-- `230` natEvent  
-- `361`–`364` portRangeStart / End / Step / NumPorts  
-- pre-NAT source from IE `8` / IPv6 `27`
+Ports in the set: `start`, `start+step`, `start+2*step`, … (count = numPorts).  
+IPDR stores `port_step` and matches **only** ports that belong to that set (not every port between start and end when step > 1).
 
-### 2) REST API (HSL bridge / scripts)
+---
+
+## ASR 1001-X — working PBA + HSL config
+
+Adapt interfaces / pool / ACL to your network. Prerequisites: **CGN mode** + **paired-address pooling (PAP)**.
+
+```cisco
+configure terminal
+!
+interface GigabitEthernet0/0/0
+ description INSIDE
+ ip nat inside
+!
+interface GigabitEthernet0/0/1
+ description OUTSIDE
+ ip nat outside
+!
+ip nat settings mode cgn
+!
+! Public pool (example)
+ip nat pool CGN_POOL 203.0.113.10 203.0.113.20 prefix-length 24
+!
+access-list 1 permit 100.64.0.0 0.63.255.255
+ip nat inside source list 1 pool CGN_POOL
+!
+! Bulk Port Allocation (PBA) — set-size / step-size per design
+! Example: 512 ports per block, step 8 (scattered)
+ip nat settings pap bpa set-size 512 step-size 8
+!
+! === THIS is the IPDR feed (NOT interface NetFlow) ===
+ip nat log translations flow-export v9 udp destination 192.168.1.100 2055
+!
+end
+```
+
+Verify on ASR:
+
+```cisco
+show ip nat bpa
+show ip nat translations
+show ip nat statistics
+```
+
+On IPDR host:
+
+```bash
+# Start collector (same UDP port as HSL destination)
+curl -X POST "http://127.0.0.1:8000/api/collector/start" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me-admin" \
+  -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
+
+sudo tcpdump -ni any udp port 2055 -c 20
+# Expect NetFlow v9 templates with IEs 225, 230, 361, 363, 364
+
+curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=4000&at=2026-11-06T12:30:00Z" \
+  -H "X-API-Key: change-me-lea"
+```
+
+Optional second exporter for **traffic volume** (separate from NAT HSL) — Flexible NetFlow on the **inside** interface, still toward IPDR port 2055 or another port. PBA identity stays on HSL; flows are correlated by inside IP + time via `/api/lea/investigate`.
+
+---
+
+## Security / LEA lookup
+
+Inputs: **public IP + public port + time** (no inside_port, no XLATE table).
+
+```bash
+curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=4008&at=2026-11-06T12:30:00Z" \
+  -H "X-API-Key: change-me-lea"
+```
+
+Full package (CGNAT → AAA → flows):
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/lea/investigate" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: change-me-lea" \
+  -d '{
+    "public_ip": "203.0.113.10",
+    "public_port": 4008,
+    "at": "2026-11-06T12:30:00Z",
+    "case_ref": "CASE-001",
+    "window_seconds": 300
+  }'
+```
+
+If `ambiguous: true`, review `matches[]` — do not treat as unique.
+
+---
+
+## REST ingest (lab / bridge)
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/api/cgnat/blocks" \
   -H "Content-Type: application/json" \
   -d '{
-    "event_time": "2026-11-06T12:00:00",
+    "event_time": "2026-11-06T12:00:00Z",
     "event_type": "allocate",
     "inside_ip": "100.64.10.25",
     "outside_ip": "203.0.113.10",
-    "port_start": 1024,
-    "port_end": 2047,
-    "port_block_size": 1024,
+    "port_start": 4000,
+    "port_end": 8088,
+    "port_block_size": 512,
+    "port_step": 8,
     "protocol": "ANY",
-    "router_ip": "192.0.2.1",
-    "source": "api"
+    "source": "api",
+    "mapping_mode": "pba"
   }'
 ```
 
-Bulk: `POST /api/cgnat/blocks/bulk` with `{ "records": [ ... ] }`.
-
-## Security lookup (LEA / SOC)
-
-Inputs: public IP + public port (+ incident time). **No** inside_port and **no** connection table.
-
-```bash
-curl -s "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
-```
-
-Example response:
-
-```json
-{
-  "found": true,
-  "public_ip": "203.0.113.10",
-  "public_port": 1500,
-  "inside_ip": "100.64.10.25",
-  "port_start": 1024,
-  "port_end": 2047,
-  "port_block_size": 1024,
-  "event_time": "2026-11-06T12:00:00",
-  "message": "OK — mapped via port-block allocation (no NAT connection/XLATE entry required)"
-}
-```
-
-Reverse lookup (subscriber IP → public blocks at that time):
-
-```bash
-curl -s "http://127.0.0.1:8000/api/cgnat/lookup/by-subscriber?inside_ip=100.64.10.25&at=2026-11-06T12:30:00"
-```
-
-List blocks: `GET /api/cgnat/blocks?outside_ip=203.0.113.10&is_active=true`
+Sample: `python examples/cgnat_pba_sample.py`
 
 ---
 
-## Cisco ASR 1001-X — configuration outline
+## Ops checklist
 
-Exact CLI varies by IOS-XE / CGN feature set. Typical building blocks:
+1. Prefer **PBA + HSL** over overload for ASR scale.  
+2. Point `ip nat log translations flow-export v9` at IPDR UDP **2055**.  
+3. NTP on ASR and IPDR (`/health` → `utc_now`).  
+4. Retain PBA allocate/deallocate for the legal retention window.  
+5. For “who + what traffic”: HSL PBA + optional inside NetFlow/sFlow + AAA.  
+6. Firewall: allow UDP 2055 only from ASR.
 
-### Enable CGN with PBA
+**Durable HSL bridge** (queue, spool, dedicated process): [HSL_BRIDGE.md](HSL_BRIDGE.md)
 
-```cisco
-! Example concepts — adapt to your IOS-XE / CGN guide
-ip nat settings mode cgn
-ip nat settings port-block-allocation size 1024
-! or platform-specific:
-! ip nat translation port-block-allocation enable
-! ip nat translation port-block size 1024
-```
-
-Confirm with:
-
-```cisco
-show ip nat translations
-show ip nat port-block
-show platform hardware qfp active feature nat datapath …
-```
-
-### Export NAT / PBA logs via IPFIX (HSL → collector)
-
-Point the exporter at the IPDR server (`192.168.1.100:2055` in examples):
-
-```cisco
-! Conceptual Flexible NetFlow / IPFIX exporter toward IPDR
-flow exporter IPDR_CGN
- destination 192.168.1.100
- transport udp 2055
- export-protocol ipfix
- source Loopback0
-!
-! Bind exporter to CGN / NAT logging per your IOS-XE release
-! (commands differ: "ip nat log …", "flow record" with NAT fields, etc.)
-```
-
-Firewall on the IPDR host: allow **UDP 2055** from the ASR management/CGN source.
-
-> Always validate templates with a packet capture (`tcpdump -ni any udp port 2055`) and check IPDR logs for `CGNAT PBA allocate/deallocate`.
-
-### Operational tips for security
-
-1. Retain PBA logs at least as long as your legal retention policy for IPDR.  
-2. Lookups must use the **time of the incident**, not “now”, if the block may have been released.  
-3. Port block size (512/1024/…) must match ASR config so `port_end` is correct when only start+size are exported.  
-4. Keep ASR and IPDR clocks on **NTP**.
-
----
-
-## Sample script
-
-```bash
-python examples/cgnat_pba_sample.py
-```
-
-Persian docs: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · [INSTALL-FA.md](INSTALL-FA.md) · [ROUTER_SETUP-FA.md](ROUTER_SETUP-FA.md)  
-English router guide: [ROUTER_SETUP.md](ROUTER_SETUP.md)
+LEA guide: [LEA.md](LEA.md) · Install: [INSTALL.md](INSTALL.md) · فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)

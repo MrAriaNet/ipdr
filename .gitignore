@@ -45,6 +45,9 @@ wheels/
 *.log
 logs/
 
+# Durable ingest spool / NetFlow template cache
+data/
+
 # OS
 .DS_Store
 Thumbs.db

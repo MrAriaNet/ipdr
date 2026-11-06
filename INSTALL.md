@@ -347,22 +347,26 @@ sudo tcpdump -ni any udp port 2055 -c 10
 
 ## 14. CGNAT Port Block Allocation (PBA) — Cisco ASR
 
-On **ASR 1001-X** (or similar) with CGNAT **PBA**, the CGN assigns a port block (e.g. 512 or 1024 ports) per subscriber instead of logging every translation. There is **no connection table like NAT overload**; IPDR stores allocate/deallocate block events so **network security** can map public IP:port → subscriber inside IP.
+On **ASR 1001-X** with **PBA**, overload is heavy and per-session NetFlow from the CGN is not the model. IPDR ingests Cisco **NAT HSL** port-set allocate/deallocate (NetFlow v9):
+
+```cisco
+ip nat settings mode cgn
+ip nat settings pap bpa set-size 512 step-size 8
+ip nat log translations flow-export v9 udp destination IPDR_SERVER 2055
+```
 
 ```bash
-# Start IPFIX collector (2055) so ASR NAT/PBA templates are ingested
 curl -X POST "http://127.0.0.1:8000/api/collector/start" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: change-me-admin" \
   -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
 
-# Security lookup: public IP + port → subscriber
-curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00Z" \
+curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=4008&at=2026-11-06T12:30:00Z" \
   -H "X-API-Key: change-me-lea"
 ```
 
-ASR / data model: [CGNAT_ASR.md](CGNAT_ASR.md) · Persian: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)  
-API sample: `python examples/cgnat_pba_sample.py`
+Full ASR CLI / HSL field map: [CGNAT_ASR.md](CGNAT_ASR.md) · فارسی: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md)  
+Sample: `python examples/cgnat_pba_sample.py`
 
 ---
 
@@ -401,3 +405,4 @@ sFlow sampling / volume extrapolation: [SFLOW.md](SFLOW.md)
 | CGNAT PBA / ASR | [CGNAT_ASR.md](CGNAT_ASR.md) | [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) |
 | LEA / security | [LEA.md](LEA.md) | [LEA-FA.md](LEA-FA.md) |
 | sFlow & sample rate | [SFLOW.md](SFLOW.md) | [SFLOW-FA.md](SFLOW-FA.md) |
+| Durable HSL bridge | [HSL_BRIDGE.md](HSL_BRIDGE.md) | [HSL_BRIDGE-FA.md](HSL_BRIDGE-FA.md) |

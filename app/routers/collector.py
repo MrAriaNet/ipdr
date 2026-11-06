@@ -118,32 +118,4 @@ async def stop_collector(
 
 @router.get("/status")
 async def get_collector_status():
-    nf = collector_service.netflow_collector
-    sf = collector_service.sflow_collector
-    sm = collector_service.simple_collector
-    return {
-        "netflow": {
-            "running": bool(nf and nf.running),
-            "host": nf.host if nf else None,
-            "port": nf.port if nf else None,
-            "supports": ["v1", "v5", "v7", "v8", "v9", "ipfix"],
-            "templates_cached": len(nf.templates) if nf else 0,
-        },
-        "sflow": {
-            "running": bool(sf and sf.running),
-            "host": sf.host if sf else None,
-            "port": sf.port if sf else None,
-            "supports": ["v2", "v4", "v5"],
-            "extrapolate": sf.extrapolate if sf else None,
-            "note": (
-                "Volumes × sampling_rate ≈ full traffic; flow rows remain sampled"
-                if sf and sf.extrapolate
-                else "Raw sample sizes only" if sf else None
-            ),
-        },
-        "simple": {
-            "running": bool(sm and sm.running),
-            "host": sm.host if sm else None,
-            "port": sm.port if sm else None,
-        },
-    }
+    return collector_service.ingest_status()

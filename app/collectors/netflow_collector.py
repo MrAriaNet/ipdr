@@ -11,10 +11,15 @@ Supported versions:
 """
 from __future__ import annotations
 
+import json
+import os
 import socket
 import struct
 import threading
+import time
+from collections import defaultdict, deque
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.collectors.common import (
@@ -50,7 +55,7 @@ from app.utils.logger import logger
 
 
 class NetFlowCollector:
-    """UDP collector for NetFlow v1/v5/v7/v8/v9 and IPFIX."""
+    """UDP collector for NetFlow v1/v5/v7/v8/v9 and IPFIX (+ Cisco NAT HSL / PBA)."""
 
     def __init__(
         self,
@@ -58,6 +63,7 @@ class NetFlowCollector:
         port: int = 2055,
         callback: Optional[Callable] = None,
         cgnat_callback: Optional[Callable] = None,
+        template_store: Optional[str] = None,
     ):
         self.host = host
         self.port = port
@@ -68,6 +74,25 @@ class NetFlowCollector:
         self.thread = None
         # templates[(exporter_ip, observation_domain_or_source_id, template_id)] = list of (ie_id, length, enterprise)
         self.templates: Dict[Tuple[str, int, int], List[Tuple[int, int, int]]] = {}
+        self._template_store = Path(
+            template_store
+            or os.getenv("IPDR_TEMPLATE_STORE", "data/netflow_templates.json")
+        )
+        self._pending: Dict[Tuple[str, int, int], deque] = defaultdict(deque)
+        self._pending_max_per_key = int(os.getenv("IPDR_TEMPLATE_PENDING_MAX", "200"))
+        self._pending_ttl = float(os.getenv("IPDR_TEMPLATE_PENDING_TTL_SEC", "120"))
+        self.stats = {
+            "packets": 0,
+            "flow_records": 0,
+            "cgnat_records": 0,
+            "cgnat_parse_errors": 0,
+            "unknown_templates": 0,
+            "pending_buffered": 0,
+            "pending_replayed": 0,
+            "pending_dropped": 0,
+            "templates_learned": 0,
+        }
+        self._load_templates()
 
     def start(self):
         if self.running:
@@ -89,12 +114,54 @@ class NetFlowCollector:
                 pass
         if self.thread:
             self.thread.join(timeout=5)
+        self._save_templates()
         logger.info("NetFlow/IPFIX collector stopped")
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            **self.stats,
+            "templates_cached": len(self.templates),
+            "pending_keys": len(self._pending),
+            "pending_items": sum(len(v) for v in self._pending.values()),
+            "host": self.host,
+            "port": self.port,
+            "running": self.running,
+            "template_store": str(self._template_store),
+        }
+
+    def _load_templates(self):
+        try:
+            if not self._template_store.exists():
+                return
+            raw = json.loads(self._template_store.read_text(encoding="utf-8"))
+            for key_s, fields in raw.items():
+                parts = key_s.split("|")
+                if len(parts) != 3:
+                    continue
+                key = (parts[0], int(parts[1]), int(parts[2]))
+                self.templates[key] = [tuple(f) for f in fields]
+            logger.info(
+                f"Loaded {len(self.templates)} NetFlow/IPFIX templates from {self._template_store}"
+            )
+        except Exception as e:
+            logger.warning(f"Template store load failed: {e}")
+
+    def _save_templates(self):
+        try:
+            self._template_store.parent.mkdir(parents=True, exist_ok=True)
+            out = {
+                f"{k[0]}|{k[1]}|{k[2]}": [list(f) for f in fields]
+                for k, fields in self.templates.items()
+            }
+            self._template_store.write_text(json.dumps(out), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"Template store save failed: {e}")
 
     def _listen(self):
         while self.running:
             try:
                 data, addr = self.socket.recvfrom(65535)
+                self.stats["packets"] += 1
                 self._process_packet(data, addr)
             except socket.timeout:
                 continue
@@ -413,7 +480,11 @@ class NetFlowCollector:
                         ie_id, length = struct.unpack("!HH", data[offset:offset + 4])
                         offset += 4
                         fields.append((ie_id, length, 0))
-                    self.templates[(exporter, domain_id, template_id)] = fields
+                    exp = peer_ip((exporter,)) if ":" in str(exporter) or "." in str(exporter) else exporter
+                    self.templates[(exp, domain_id, template_id)] = fields
+                    self.stats["templates_learned"] += 1
+                    self._save_templates()
+                    self._flush_pending((exp, domain_id, template_id))
                     continue
 
             fields = []
@@ -433,10 +504,14 @@ class NetFlowCollector:
                     offset += 4
                 fields.append((ie_id, length, enterprise))
             self.templates[(exporter, domain_id, template_id)] = fields
-            logger.debug(
+            self.stats["templates_learned"] += 1
+            logger.info(
                 f"{'IPFIX' if is_ipfix else 'NetFlow v9'} template {template_id} "
-                f"from {exporter}/{domain_id}: {len(fields)} fields"
+                f"from {exporter}/{domain_id}: {len(fields)} fields "
+                f"IEs={[f[0] for f in fields[:20]]}"
             )
+            self._save_templates()
+            self._flush_pending((exporter, domain_id, template_id))
 
     def _read_ie_value(self, data: bytes, offset: int, length: int) -> Tuple[Any, int]:
         end = offset + length
@@ -465,39 +540,92 @@ class NetFlowCollector:
         unix_secs: int,
         is_ipfix: bool,
     ):
-        key = (addr[0], domain_id, template_id)
+        key = (peer_ip(addr) if isinstance(addr, tuple) else str(addr[0]), domain_id, template_id)
+        # Normalise exporter key the same way templates were stored
+        exporter = addr[0] if isinstance(addr[0], str) else peer_ip(addr)
+        key = (exporter, domain_id, template_id)
         fields = self.templates.get(key)
         if not fields:
-            logger.debug(f"No template {template_id} for {addr[0]}/{domain_id}; waiting for template")
+            self.stats["unknown_templates"] += 1
+            self._buffer_pending(key, data, addr, domain_id, sys_uptime, unix_secs, is_ipfix)
+            logger.debug(f"No template {template_id} for {exporter}/{domain_id}; buffered pending set")
             return
 
+        self._decode_data_set(data, fields, addr, sys_uptime, unix_secs, is_ipfix)
+
+    def _buffer_pending(
+        self,
+        key: Tuple[str, int, int],
+        data: bytes,
+        addr: tuple,
+        domain_id: int,
+        sys_uptime: int,
+        unix_secs: int,
+        is_ipfix: bool,
+    ):
+        q = self._pending[key]
+        q.append((bytes(data), addr, domain_id, sys_uptime, unix_secs, is_ipfix, time.time()))
+        self.stats["pending_buffered"] += 1
+        while len(q) > self._pending_max_per_key:
+            q.popleft()
+            self.stats["pending_dropped"] += 1
+        # Drop expired
+        now = time.time()
+        while q and now - q[0][6] > self._pending_ttl:
+            q.popleft()
+            self.stats["pending_dropped"] += 1
+
+    def _flush_pending(self, key: Tuple[str, int, int]):
+        fields = self.templates.get(key)
+        if not fields:
+            return
+        q = self._pending.pop(key, deque())
+        while q:
+            data, addr, _dom, sys_uptime, unix_secs, is_ipfix, _ts = q.popleft()
+            self._decode_data_set(data, fields, addr, sys_uptime, unix_secs, is_ipfix)
+            self.stats["pending_replayed"] += 1
+
+    def _decode_data_set(
+        self,
+        data: bytes,
+        fields: List[Tuple[int, int, int]],
+        addr: tuple,
+        sys_uptime: int,
+        unix_secs: int,
+        is_ipfix: bool,
+    ):
         record_len = sum(f[1] for f in fields)
         if record_len <= 0:
             return
         offset = 0
+        exporter = addr[0] if isinstance(addr[0], str) else peer_ip(addr)
         while offset + record_len <= len(data):
             values: Dict[int, Any] = {}
             pos = offset
             for ie_id, length, _ent in fields:
                 value, pos = self._read_ie_value(data, pos, length)
-                if _ent == 0:  # ignore enterprise-specific for IPDR mapping
+                # Accept enterprise==0; also keep Cisco standard IANA IEs
+                if _ent == 0:
                     values[ie_id] = value
             offset += record_len
-            # CGNAT / NAT PBA templates (Cisco ASR etc.)
+            # CGNAT / NAT PBA / Cisco ASR HSL templates
             try:
                 from app.collectors.cgnat_fields import is_cgnat_pba_record, values_to_cgnat_dict
 
                 if is_cgnat_pba_record(values):
-                    cgnat = values_to_cgnat_dict(values, addr[0], unix_secs, is_ipfix)
+                    cgnat = values_to_cgnat_dict(values, exporter, unix_secs, is_ipfix)
                     if cgnat:
                         self._emit_cgnat(cgnat)
+                        self.stats["cgnat_records"] += 1
                         continue
             except Exception as e:
-                logger.debug(f"CGNAT parse skip: {e}")
+                self.stats["cgnat_parse_errors"] += 1
+                logger.warning(f"CGNAT parse error: {e}", exc_info=True)
 
-            record = self._values_to_record(values, addr[0], sys_uptime, unix_secs, is_ipfix)
+            record = self._values_to_record(values, exporter, sys_uptime, unix_secs, is_ipfix)
             if record:
                 self._emit(record)
+                self.stats["flow_records"] += 1
 
     def _values_to_record(
         self,

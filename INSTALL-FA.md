@@ -336,20 +336,24 @@ sudo tcpdump -ni any udp port 2055 -c 10
 
 ## ۱۴. CGNAT Port Block Allocation (PBA) — سیسکو ASR
 
-اگر روی **ASR 1001-X** (یا مشابه) CGNAT به‌صورت **PBA** دارید، به‌جای لاگ تک‌تک translationها، بلوک پورت (مثلاً ۵۱۲ یا ۱۰۲۴ تایی) به مشترک اختصاص داده می‌شود. در این حالت **جدول کانکشن مثل NAT overload وجود ندارد**؛ IPDR فقط رویدادهای allocate/deallocate بلوک را نگه می‌دارد تا **امنیت شبکه** از روی IP:Port عمومی، IP داخلی مشترک را پیدا کند.
+اگر روی **ASR 1001-X** با **PBA** کار می‌کنید (overload فشار می‌آورد و با PBA دیگر NetFlow سشن‌به‌سشن ندارید)، لاگ IPDR از مسیر **NAT HSL** می‌آید نه NetFlow اینترفیس:
+
+```cisco
+ip nat settings mode cgn
+ip nat settings pap bpa set-size 512 step-size 8
+ip nat log translations flow-export v9 udp destination IPDR_SERVER 2055
+```
 
 ```bash
-# کالکتور IPFIX (پورت 2055) را روشن کنید تا قالب‌های NAT/PBA از ASR وارد شوند
 curl -X POST "http://127.0.0.1:8000/api/collector/start" \
   -H "Content-Type: application/json" \
   -d '{"collector_type":"netflow","host":"0.0.0.0","port":2055}'
 
-# جستجوی امنیت: IP و پورت عمومی → مشترک
-curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=1500&at=2026-11-06T12:30:00"
+curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=4008&at=2026-11-06T12:30:00Z"
 ```
 
-جزئیات پیکربندی ASR و مدل داده: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · انگلیسی: [CGNAT_ASR.md](CGNAT_ASR.md)  
-نمونه تست API: `python examples/cgnat_pba_sample.py`
+جزئیات کامل CLI و فیلدها: [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) · [CGNAT_ASR.md](CGNAT_ASR.md)  
+نمونه: `python examples/cgnat_pba_sample.py`
 
 ## لینک‌های مرتبط
 
@@ -362,3 +366,4 @@ curl "http://127.0.0.1:8000/api/cgnat/lookup?public_ip=203.0.113.10&public_port=
 | CGNAT PBA / ASR | [CGNAT_ASR-FA.md](CGNAT_ASR-FA.md) | [CGNAT_ASR.md](CGNAT_ASR.md) |
 | نهاد / امنیت (LEA) | [LEA-FA.md](LEA-FA.md) | [LEA.md](LEA.md) |
 | sFlow و sample rate | [SFLOW-FA.md](SFLOW-FA.md) | [SFLOW.md](SFLOW.md) |
+| واسط HSL / لاگ پایدار | [HSL_BRIDGE-FA.md](HSL_BRIDGE-FA.md) | [HSL_BRIDGE.md](HSL_BRIDGE.md) |

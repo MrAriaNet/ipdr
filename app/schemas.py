@@ -118,6 +118,7 @@ class CGNATPortBlockCreate(BaseModel):
     port_start: int = Field(..., ge=0, le=65535)
     port_end: int = Field(..., ge=0, le=65535)
     port_block_size: Optional[int] = None
+    port_step: Optional[int] = Field(1, ge=1, le=65535)  # Cisco BPA scattered step (IE 363)
     protocol: Optional[str] = "ANY"
     protocol_number: Optional[int] = None
     ip_version: Optional[int] = 4
@@ -144,6 +145,7 @@ class CGNATPortBlockResponse(BaseModel):
     port_start: int
     port_end: int
     port_block_size: Optional[int]
+    port_step: Optional[int] = 1
     protocol: Optional[str]
     protocol_number: Optional[int]
     ip_version: Optional[int]
@@ -165,6 +167,7 @@ class CGNATMatchItem(BaseModel):
     port_start: int
     port_end: int
     port_block_size: Optional[int] = None
+    port_step: Optional[int] = 1
     protocol: Optional[str] = None
     event_time: Optional[datetime] = None
     released_at: Optional[datetime] = None
@@ -189,6 +192,7 @@ class CGNATLookupResponse(BaseModel):
     port_start: Optional[int] = None
     port_end: Optional[int] = None
     port_block_size: Optional[int] = None
+    port_step: Optional[int] = None
     protocol: Optional[str] = None
     event_time: Optional[datetime] = None
     released_at: Optional[datetime] = None
@@ -207,6 +211,7 @@ class CGNATSubscriberBlockItem(BaseModel):
     port_start: int
     port_end: int
     port_block_size: Optional[int] = None
+    port_step: Optional[int] = 1
     protocol: Optional[str] = None
     event_time: Optional[datetime] = None
     released_at: Optional[datetime] = None
